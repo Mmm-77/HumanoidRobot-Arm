@@ -1,0 +1,66 @@
+vision_node:
+  ros__parameters:
+    # Default D435i path: subscribe to the official realsense2_camera color stream
+    # and consume its factory CameraInfo calibration and hardware timestamps.
+    input.mode: "realsense_ros"
+    input.image_topic: "/camera/camera/color/image_raw"
+    input.camera_info_topic: "/camera/camera/color/camera_info"
+    input.camera_info_timeout_s: 2.0
+    input.hardware_id: "Intel RealSense D435i"
+
+    # Optional fallback for offline/generic UVC use: set input.mode to "opencv".
+    # A numeric string opens a camera index; another value is a device path/URI.
+    camera.device: "0"
+    camera.backend: -1
+    camera.width: 640
+    camera.height: 480
+    camera.fps: 30.0
+    camera.buffer_size: 1
+    camera.reopen_after_failures: 3
+    camera.reopen_delay_s: 1.0
+    processing_rate_hz: 30.0
+
+    # Used only by the OpenCV fallback. In realsense_ros mode, CameraInfo from the
+    # official driver is authoritative. Zero focal lengths deliberately prevent
+    # unsafe use of the fallback without an actual calibration.
+    calibration.file: ""
+    calibration.image_width: 640
+    calibration.image_height: 480
+    calibration.camera_matrix: [0.0, 0.0, 0.0,
+                                0.0, 0.0, 0.0,
+                                0.0, 0.0, 1.0]
+    calibration.distortion_coefficients: [0.0, 0.0, 0.0, 0.0, 0.0]
+    calibration.distortion_model: "plumb_bob"
+    calibration.allow_resolution_scaling: false
+
+    tag.family: "tag36h11"
+    tag.id: 0
+    # Deliberately invalid until the measured black-border edge length is set.
+    tag.size_m: 0.0
+    tag.corner_refinement: true
+    tag.quad_decimate: 1.0
+
+    quality.max_reprojection_error_px: 2.5
+    quality.min_tag_area_ratio: 0.002
+    quality.min_decision_margin: 0.0
+    quality.min_camera_distance_m: 0.05
+    quality.max_camera_distance_m: 3.0
+    quality.max_position_jump_m: 0.20
+    quality.max_orientation_jump_rad: 0.70
+    quality.max_frame_age_s: 0.20
+    quality.continuity_reset_s: 0.50
+
+    filter.position_alpha: 0.35
+    filter.orientation_alpha: 0.30
+    filter.reset_gap_s: 0.50
+
+    frames.tag: "tag"
+    frames.camera: "camera"
+    topics.pose: "vision/camera_pose"
+    topics.valid: "vision/valid"
+    topics.camera_info: "vision/camera_info"
+    topics.diagnostics: "vision/diagnostics"
+    topics.raw_image: "vision/raw_image"
+    topics.debug_image: "vision/debug_image"
+    publish_raw_image: false
+    publish_debug_image: false
