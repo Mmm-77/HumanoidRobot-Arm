@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import importlib
 import time
 from dataclasses import dataclass
@@ -194,7 +195,18 @@ class RealSenseCamera:
             self.open()
         assert self._pipeline is not None
         try:
-            frames = self._pipeline.wait_for_frames(self.config.frame_timeout_ms)
+            # wrap wait_for_frames in a thread so a physically disconnected
+            # camera (where the SDK may hang indefinitely) cannot block the
+            # ROS timer callback forever.
+            deadline_s = self.config.frame_timeout_ms / 1000.0 + 0.5
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            try:
+                future = pool.submit(
+                    self._pipeline.wait_for_frames, self.config.frame_timeout_ms
+                )
+                frames = future.result(timeout=deadline_s)
+            finally:
+                pool.shutdown(wait=False)
             color_frame = frames.get_color_frame()
             if not color_frame:
                 raise RuntimeError("frameset does not contain a color frame")
