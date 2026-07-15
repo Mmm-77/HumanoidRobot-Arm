@@ -25,6 +25,7 @@ import rclpy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 
 
@@ -67,22 +68,44 @@ class PoseVisualizer(Node):
         self._pose_valid: bool = False
         self._image_received: bool = False
 
-        # 订阅 debug_image (已画好 AprilTag 框)
-        self.create_subscription(
-            Image, "vision/debug_image", self._image_callback, 10
+        # 订阅 debug_image (已画好 AprilTag 框) — 与 vision_node 的 sensor_qos 匹配
+        sensor_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
         )
-        # 订阅 camera_pose
+        self.create_subscription(
+            Image, "vision/debug_image", self._image_callback, sensor_qos
+        )
+        # 订阅 camera_pose — 与 vision_node 的 state_qos 匹配
         self.create_subscription(
             PoseStamped, "vision/camera_pose", self._pose_callback, 10
         )
 
+        self._image_count = 0
+        self._pose_count = 0
+
+        # 定时诊断日志，帮助排查回调是否被触发
+        self._diag_timer = self.create_timer(2.0, self._diag_callback)
+
         self.get_logger().info("PoseVisualizer 已启动，按 ESC 或关闭窗口退出")
         self.get_logger().info(
-            "确保 vision_node 已启用 debug_image: "
-            "ros2 param set /vision_node publish_debug_image true"
+            "订阅话题: vision/debug_image, vision/camera_pose"
+        )
+
+    def _diag_callback(self) -> None:
+        with self._lock:
+            img_ok = self._latest_image is not None
+            pose_ok = self._latest_position is not None
+            img_cnt = self._image_count
+            pose_cnt = self._pose_count
+        self.get_logger().info(
+            f"状态: image={'OK' if img_ok else 'WAIT'}({img_cnt})  "
+            f"pose={'OK' if pose_ok else 'WAIT'}({pose_cnt})"
         )
 
     def _image_callback(self, msg: Image) -> None:
+        self._image_count += 1
         try:
             image = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         except Exception as exc:
@@ -93,6 +116,7 @@ class PoseVisualizer(Node):
             self._image_received = True
 
     def _pose_callback(self, msg: PoseStamped) -> None:
+        self._pose_count += 1
         px = msg.pose.position.x
         py = msg.pose.position.y
         pz = msg.pose.position.z
