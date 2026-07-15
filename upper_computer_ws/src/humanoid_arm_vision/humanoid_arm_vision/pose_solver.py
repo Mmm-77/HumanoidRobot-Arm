@@ -103,7 +103,7 @@ class AprilTagPoseSolver:
             all_tvecs.append(iterative_tvec)
 
         candidates: list[tuple[float, NDArray[np.float64], NDArray[np.float64]]] = []
-        for rvec, tvec in zip(all_rvecs, all_tvecs, strict=True):
+        for rvec, tvec in zip(all_rvecs, all_tvecs):
             rotation_vector = np.asarray(rvec, dtype=np.float64).reshape(3, 1)
             translation_vector = np.asarray(tvec, dtype=np.float64).reshape(3, 1)
             if not np.all(np.isfinite(rotation_vector)) or not np.all(

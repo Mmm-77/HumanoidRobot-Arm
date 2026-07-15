@@ -6,7 +6,7 @@ Quaternions use ROS ordering ``[x, y, z, w]`` throughout this package.
 from __future__ import annotations
 
 import math
-from typing import TypeAlias
+from typing_extensions import TypeAlias
 
 import numpy as np
 from numpy.typing import NDArray

@@ -2,6 +2,22 @@
 
 from __future__ import annotations
 
+import os
+
+# Ensure ROS 2 shared libraries are discoverable even when the process
+# environment does not inherit LD_LIBRARY_PATH (e.g. sandboxed shells).
+_ros_lib = "/opt/ros/foxy/lib"
+_ld_path = os.environ.get("LD_LIBRARY_PATH", "")
+if _ros_lib not in _ld_path:
+    _extra = (
+        "/opt/ros/foxy/opt/yaml_cpp_vendor/lib"
+        ":/opt/ros/foxy/opt/rviz_ogre_vendor/lib"
+        ":/opt/ros/foxy/lib/x86_64-linux-gnu"
+    )
+    os.environ["LD_LIBRARY_PATH"] = (
+        f"{_ros_lib}:{_extra}:{_ld_path}" if _ld_path else f"{_ros_lib}:{_extra}"
+    )
+
 import math
 import time
 from typing import Any, Iterable
@@ -385,7 +401,10 @@ class VisionNode(Node):
             encoding = "bgra8"
         else:
             encoding = "bgr8"
-        message = self._bridge.cv2_to_imgmsg(image, encoding=encoding)
+        # cv_bridge in Foxy is incompatible with OpenCV >= 5; use passthrough
+        # and set the encoding manually.
+        message = self._bridge.cv2_to_imgmsg(image, encoding="passthrough")
+        message.encoding = encoding
         message.header.stamp = stamp
         message.header.frame_id = self._camera_frame
         publisher.publish(message)

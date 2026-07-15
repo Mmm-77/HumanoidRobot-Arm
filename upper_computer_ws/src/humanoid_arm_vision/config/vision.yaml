@@ -13,8 +13,8 @@ vision_node:
 
     tag.family: "tag36h11"
     tag.id: 0
-    # Deliberately invalid until the measured black-border edge length is set.
-    tag.size_m: 0.0
+    # Must be set to the measured black-border edge length in metres.
+    tag.size_m: 0.070
     tag.corner_refinement: true
     tag.quad_decimate: 1.0
 
@@ -40,5 +40,5 @@ vision_node:
     topics.diagnostics: "vision/diagnostics"
     topics.raw_image: "vision/raw_image"
     topics.debug_image: "vision/debug_image"
-    publish_raw_image: false
-    publish_debug_image: false
+    publish_raw_image: true
+    publish_debug_image: true

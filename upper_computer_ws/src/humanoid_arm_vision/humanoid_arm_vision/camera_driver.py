@@ -140,9 +140,15 @@ class RealSenseCamera:
     def _calibration_from_intrinsics(self, intrinsics: Any) -> CameraCalibration:
         distortion_none = getattr(self._rs.distortion, "none")
         distortion_brown = getattr(self._rs.distortion, "brown_conrady", None)
+        distortion_inverse = getattr(self._rs.distortion, "inverse_brown_conrady", None)
         if intrinsics.model == distortion_none:
             coefficients: list[float] = []
         elif distortion_brown is not None and intrinsics.model == distortion_brown:
+            coefficients = [float(value) for value in intrinsics.coeffs]
+        elif (
+            distortion_inverse is not None
+            and intrinsics.model == distortion_inverse
+        ):
             coefficients = [float(value) for value in intrinsics.coeffs]
         else:
             raise CameraOpenError(

@@ -136,7 +136,7 @@ class AprilTagDetector:
 
         matches: list[AprilTagDetection] = []
         for marker_corners, marker_id in zip(
-            corners_list, ids.reshape(-1), strict=True
+            corners_list, ids.reshape(-1)
         ):
             tag_id = int(marker_id)
             if tag_id != self.config.target_id:
