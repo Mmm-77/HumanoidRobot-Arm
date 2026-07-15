@@ -13,7 +13,7 @@ from .camera_driver import (
     CameraFrame,
     CameraOpenError,
     CameraReadError,
-    OpenCVCamera,
+    RealSenseCamera,
 )
 from .pose_filter import FilteredPose, PoseFilter, PoseFilterConfig
 from .pose_solver import AprilTagPoseSolver, PoseEstimate, PoseSolverError
@@ -33,7 +33,7 @@ __all__ = [
     "CameraReadError",
     "DetectorError",
     "FilteredPose",
-    "OpenCVCamera",
+    "RealSenseCamera",
     "PoseEstimate",
     "PoseFilter",
     "PoseFilterConfig",

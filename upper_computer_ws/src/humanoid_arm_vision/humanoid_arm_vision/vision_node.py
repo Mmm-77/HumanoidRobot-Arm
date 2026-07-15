@@ -19,19 +19,10 @@ from std_msgs.msg import Bool
 
 from .apriltag_detector import AprilTagConfig, AprilTagDetection, AprilTagDetector
 from .camera_calibration import CalibrationError, CameraCalibration
-from .camera_driver import CameraConfig, CameraError, CameraFrame, OpenCVCamera
+from .camera_driver import CameraConfig, CameraError, CameraFrame, RealSenseCamera
 from .pose_filter import PoseFilter, PoseFilterConfig
 from .pose_solver import AprilTagPoseSolver, PoseEstimate, PoseSolverError
 from .quality_gate import PoseQualityGate, QualityConfig, QualityDecision, QualityReason
-
-
-def _parse_device(value: object) -> int | str:
-    text = str(value).strip()
-    if text.isdecimal() or (text.startswith("-") and text[1:].isdecimal()):
-        return int(text)
-    if not text:
-        raise ValueError("camera.device must not be empty")
-    return text
 
 
 class VisionNode(Node):
@@ -43,37 +34,16 @@ class VisionNode(Node):
         if not self._tag_frame or not self._camera_frame:
             raise ValueError("tag and camera frame ids must not be empty")
 
-        self._input_mode = str(self._value("input.mode")).strip().lower()
-        if self._input_mode not in {"realsense_ros", "opencv"}:
-            raise ValueError("input.mode must be 'realsense_ros' or 'opencv'")
-        self._hardware_id = str(self._value("input.hardware_id"))
-        self._camera_info_timeout_s = float(self._value("input.camera_info_timeout_s"))
-        if self._camera_info_timeout_s <= 0.0:
-            raise ValueError("input.camera_info_timeout_s must be positive")
-        self._base_calibration: CameraCalibration | None = (
-            self._load_calibration() if self._input_mode == "opencv" else None
+        camera_config = CameraConfig(
+            serial_number=str(self._value("camera.serial_number")).strip(),
+            width=int(self._value("camera.width")),
+            height=int(self._value("camera.height")),
+            fps=int(self._value("camera.fps")),
+            frame_timeout_ms=int(self._value("camera.frame_timeout_ms")),
+            reopen_after_failures=int(self._value("camera.reopen_after_failures")),
+            reopen_delay_s=float(self._value("camera.reopen_delay_s")),
         )
-        self._allow_resolution_scaling = bool(
-            self._value("calibration.allow_resolution_scaling")
-        )
-        self._calibration_cache: dict[tuple[int, int], CameraCalibration] = {}
-        self._camera_info_received_s: float | None = None
-        self._camera_info_error = ""
-        self._frame_sequence = 0
-        self._camera: OpenCVCamera | None = None
-        if self._input_mode == "opencv":
-            camera_config = CameraConfig(
-                device=_parse_device(self._value("camera.device")),
-                backend=int(self._value("camera.backend")),
-                width=int(self._value("camera.width")),
-                height=int(self._value("camera.height")),
-                fps=float(self._value("camera.fps")),
-                buffer_size=int(self._value("camera.buffer_size")),
-                reopen_after_failures=int(self._value("camera.reopen_after_failures")),
-                reopen_delay_s=float(self._value("camera.reopen_delay_s")),
-            )
-            self._camera = OpenCVCamera(camera_config)
-            self._hardware_id = str(camera_config.device)
+        self._camera = RealSenseCamera(camera_config)
         self._detector = AprilTagDetector(
             AprilTagConfig(
                 family=str(self._value("tag.family")),
@@ -148,58 +118,28 @@ class VisionNode(Node):
             else None
         )
 
-        self._timer = None
-        self._image_subscription = None
-        self._camera_info_subscription = None
-        if self._input_mode == "realsense_ros":
-            self._camera_info_subscription = self.create_subscription(
-                CameraInfo,
-                str(self._value("input.camera_info_topic")),
-                self._camera_info_callback,
-                sensor_qos,
-            )
-            self._image_subscription = self.create_subscription(
-                Image,
-                str(self._value("input.image_topic")),
-                self._image_callback,
-                sensor_qos,
-            )
-        else:
-            processing_rate_hz = float(self._value("processing_rate_hz"))
-            if not math.isfinite(processing_rate_hz) or processing_rate_hz <= 0.0:
-                raise ValueError("processing_rate_hz must be a positive finite value")
-            self._timer = self.create_timer(
-                1.0 / processing_rate_hz, self._process_opencv_frame
-            )
+        processing_rate_hz = float(self._value("processing_rate_hz"))
+        if not math.isfinite(processing_rate_hz) or processing_rate_hz <= 0.0:
+            raise ValueError("processing_rate_hz must be a positive finite value")
+        self._timer = self.create_timer(
+            1.0 / processing_rate_hz, self._process_realsense_frame
+        )
         self.get_logger().info(
-            f"vision pipeline using {self._input_mode}, configured for tag "
+            "vision pipeline using the RealSense SDK, configured for tag "
             f"{self._detector.config.family}:{self._detector.config.target_id} "
             f"in frame {self._tag_frame!r}"
         )
 
     def _declare_parameters(self) -> None:
         defaults: dict[str, object] = {
-            "input.mode": "realsense_ros",
-            "input.image_topic": "/camera/camera/color/image_raw",
-            "input.camera_info_topic": "/camera/camera/color/camera_info",
-            "input.camera_info_timeout_s": 2.0,
-            "input.hardware_id": "Intel RealSense D435i",
-            "camera.device": "0",
-            "camera.backend": -1,
+            "camera.serial_number": "",
             "camera.width": 640,
             "camera.height": 480,
-            "camera.fps": 30.0,
-            "camera.buffer_size": 1,
+            "camera.fps": 30,
+            "camera.frame_timeout_ms": 1000,
             "camera.reopen_after_failures": 3,
             "camera.reopen_delay_s": 1.0,
             "processing_rate_hz": 30.0,
-            "calibration.file": "",
-            "calibration.image_width": 0,
-            "calibration.image_height": 0,
-            "calibration.camera_matrix": [0.0] * 9,
-            "calibration.distortion_coefficients": [0.0] * 5,
-            "calibration.distortion_model": "plumb_bob",
-            "calibration.allow_resolution_scaling": False,
             "tag.family": "tag36h11",
             "tag.id": 0,
             "tag.size_m": 0.0,
@@ -234,138 +174,16 @@ class VisionNode(Node):
     def _value(self, name: str) -> Any:
         return self.get_parameter(name).value
 
-    def _load_calibration(self) -> CameraCalibration:
-        calibration_file = str(self._value("calibration.file")).strip()
-        if calibration_file:
-            calibration = CameraCalibration.from_file(calibration_file)
-            self.get_logger().info(f"loaded calibration from {calibration_file}")
-            return calibration
-        return CameraCalibration.from_mapping(
-            {
-                "image_width": self._value("calibration.image_width"),
-                "image_height": self._value("calibration.image_height"),
-                "camera_matrix": self._value("calibration.camera_matrix"),
-                "distortion_coefficients": self._value(
-                    "calibration.distortion_coefficients"
-                ),
-                "distortion_model": self._value("calibration.distortion_model"),
-            }
-        )
-
-    def _calibration_for_image(self, image: np.ndarray) -> CameraCalibration:
-        height, width = image.shape[:2]
-        key = (width, height)
-        calibration = self._calibration_cache.get(key)
-        if calibration is None:
-            if self._base_calibration is None:
-                raise CalibrationError("no valid CameraInfo has been received")
-            calibration = self._base_calibration.for_resolution(
-                width, height, allow_scaling=self._allow_resolution_scaling
-            )
-            self._calibration_cache[key] = calibration
-        return calibration
-
-    def _camera_info_callback(self, message: CameraInfo) -> None:
-        try:
-            calibration = CameraCalibration.from_mapping(
-                {
-                    "image_width": message.width,
-                    "image_height": message.height,
-                    "camera_matrix": list(message.k),
-                    "distortion_coefficients": list(message.d),
-                    "distortion_model": message.distortion_model or "plumb_bob",
-                }
-            )
-        except CalibrationError as exc:
-            self._camera_info_error = str(exc)
-            self.get_logger().error(f"invalid RealSense CameraInfo: {exc}")
-            return
-        changed = (
-            self._base_calibration is None
-            or calibration.image_width != self._base_calibration.image_width
-            or calibration.image_height != self._base_calibration.image_height
-            or not np.allclose(
-                calibration.camera_matrix, self._base_calibration.camera_matrix
-            )
-            or not np.allclose(
-                calibration.distortion_coefficients,
-                self._base_calibration.distortion_coefficients,
-            )
-        )
-        if changed:
-            self._base_calibration = calibration
-            self._calibration_cache.clear()
-        self._camera_info_received_s = self._clock_seconds()
-        self._camera_info_error = ""
-        if message.header.frame_id:
-            self._camera_frame = message.header.frame_id
-
-    def _image_callback(self, message: Image) -> None:
-        stamp = message.header.stamp
-        now_s = self._clock_seconds()
-        try:
-            image = self._bridge.imgmsg_to_cv2(message, desired_encoding="bgr8")
-        except Exception as exc:
-            self._publish_invalid(
-                QualityReason.INTERNAL_ERROR,
-                detail=f"cv_bridge failed to decode image: {exc}",
-                stamp=stamp,
-            )
-            return
-        self._frame_sequence += 1
-        frame = CameraFrame(
-            image=np.asarray(image, dtype=np.uint8),
-            capture_time_s=self._stamp_seconds(stamp),
-            sequence=self._frame_sequence,
-        )
-        if self._camera_info_received_s is None or self._base_calibration is None:
-            detail = self._camera_info_error or "waiting for RealSense CameraInfo"
-            self._publish_result(
-                PoseQualityGate.invalid(QualityReason.CAMERA_INFO_MISSING),
-                stamp=stamp,
-                frame=frame,
-                detail=detail,
-            )
-            return
-        camera_info_age = now_s - self._camera_info_received_s
-        if camera_info_age > self._camera_info_timeout_s:
-            self._publish_result(
-                PoseQualityGate.invalid(
-                    QualityReason.CAMERA_INFO_STALE,
-                    {"camera_info_age_s": camera_info_age},
-                ),
-                stamp=stamp,
-                frame=frame,
-                detail="RealSense CameraInfo stopped updating",
-            )
-            return
-        try:
-            calibration = self._calibration_for_image(frame.image)
-        except CalibrationError as exc:
-            self._publish_result(
-                PoseQualityGate.invalid(QualityReason.CALIBRATION_ERROR),
-                frame=frame,
-                stamp=stamp,
-                detail=str(exc),
-            )
-            return
-        self._process_image(frame, calibration, stamp=stamp, now_s=now_s)
-
-    def _process_opencv_frame(self) -> None:
-        assert self._camera is not None
+    def _process_realsense_frame(self) -> None:
         try:
             frame = self._camera.read()
         except CameraError as exc:
             self._publish_invalid(QualityReason.CAMERA_ERROR, detail=str(exc))
             return
         stamp = self.get_clock().now().to_msg()
-        try:
-            calibration = self._calibration_for_image(frame.image)
-        except CalibrationError as exc:
-            decision = PoseQualityGate.invalid(QualityReason.CALIBRATION_ERROR)
-            self._publish_result(decision, frame=frame, stamp=stamp, detail=str(exc))
-            return
-        self._process_image(frame, calibration, stamp=stamp, now_s=time.monotonic())
+        self._process_image(
+            frame, self._camera.calibration, stamp=stamp, now_s=time.monotonic()
+        )
 
     def _process_image(
         self,
@@ -443,13 +261,6 @@ class VisionNode(Node):
             PoseQualityGate.invalid(reason), stamp=stamp, detail=detail
         )
 
-    def _clock_seconds(self) -> float:
-        return self.get_clock().now().nanoseconds * 1e-9
-
-    @staticmethod
-    def _stamp_seconds(stamp) -> float:
-        return float(stamp.sec) + float(stamp.nanosec) * 1e-9
-
     def _publish_result(
         self,
         decision: QualityDecision,
@@ -521,7 +332,7 @@ class VisionNode(Node):
         array.header.stamp = stamp
         status = DiagnosticStatus()
         status.name = "humanoid_arm_vision/pipeline"
-        status.hardware_id = self._hardware_id
+        status.hardware_id = self._camera.hardware_id
         status.message = decision.reason.value
         if decision.valid:
             status.level = DiagnosticStatus.OK
@@ -599,8 +410,7 @@ class VisionNode(Node):
         return output
 
     def destroy_node(self) -> bool:
-        if self._camera is not None:
-            self._camera.close()
+        self._camera.close()
         return super().destroy_node()
 
 
@@ -610,7 +420,7 @@ def main(args: Iterable[str] | None = None) -> None:
     try:
         node = VisionNode()
         rclpy.spin(node)
-    except (CalibrationError, ValueError) as exc:
+    except (CalibrationError, CameraError, ValueError) as exc:
         rclpy.logging.get_logger("vision_node").fatal(
             f"invalid vision configuration: {exc}"
         )

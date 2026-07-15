@@ -1,56 +1,47 @@
-"""OpenCV camera ownership, configuration, timestamps, and reconnect handling."""
+"""Intel RealSense SDK camera ownership, calibration, and reconnect handling."""
 
 from __future__ import annotations
 
+import importlib
 import time
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Any, Callable
 
-import cv2
 import numpy as np
 from numpy.typing import NDArray
 
+from .camera_calibration import CameraCalibration
+
 
 class CameraError(RuntimeError):
-    """Base class for camera failures."""
+    """Base class for RealSense camera failures."""
 
 
 class CameraOpenError(CameraError):
-    """Raised when the configured camera cannot be opened."""
+    """Raised when the configured RealSense camera cannot be opened."""
 
 
 class CameraReadError(CameraError):
-    """Raised when an opened camera does not return a valid frame."""
-
-
-class _Capture(Protocol):
-    def isOpened(self) -> bool: ...
-
-    def read(self) -> tuple[bool, NDArray[np.uint8] | None]: ...
-
-    def set(self, prop_id: int, value: float) -> bool: ...
-
-    def release(self) -> None: ...
+    """Raised when an opened RealSense camera does not return a color frame."""
 
 
 @dataclass(frozen=True)
 class CameraConfig:
-    device: int | str = 0
-    backend: int = -1
+    serial_number: str = ""
     width: int = 640
     height: int = 480
-    fps: float = 30.0
-    buffer_size: int = 1
+    fps: int = 30
+    frame_timeout_ms: int = 1000
     reopen_after_failures: int = 3
     reopen_delay_s: float = 1.0
 
     def __post_init__(self) -> None:
         if self.width <= 0 or self.height <= 0:
             raise ValueError("camera width and height must be positive")
-        if self.fps <= 0.0:
+        if self.fps <= 0:
             raise ValueError("camera fps must be positive")
-        if self.buffer_size <= 0:
-            raise ValueError("camera buffer size must be positive")
+        if self.frame_timeout_ms <= 0:
+            raise ValueError("camera frame timeout must be positive")
         if self.reopen_after_failures <= 0:
             raise ValueError("reopen_after_failures must be positive")
         if self.reopen_delay_s < 0.0:
@@ -64,28 +55,48 @@ class CameraFrame:
     sequence: int
 
 
-CaptureFactory = Callable[..., _Capture]
+class RealSenseCamera:
+    """Capture BGR frames and factory intrinsics through ``pyrealsense2``."""
 
-
-class OpenCVCamera:
     def __init__(
         self,
         config: CameraConfig,
         *,
-        capture_factory: CaptureFactory = cv2.VideoCapture,
+        rs_module: Any | None = None,
         monotonic_clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.config = config
-        self._capture_factory = capture_factory
+        try:
+            self._rs = (
+                rs_module
+                if rs_module is not None
+                else importlib.import_module("pyrealsense2")
+            )
+        except ImportError as exc:
+            raise CameraOpenError(
+                "pyrealsense2 is not installed for this Python interpreter"
+            ) from exc
         self._clock = monotonic_clock
-        self._capture: _Capture | None = None
+        self._pipeline: Any | None = None
+        self._calibration: CameraCalibration | None = None
+        self._hardware_id = "Intel RealSense"
         self._sequence = 0
         self._consecutive_failures = 0
         self._next_open_time_s = 0.0
 
     @property
     def is_open(self) -> bool:
-        return self._capture is not None and bool(self._capture.isOpened())
+        return self._pipeline is not None
+
+    @property
+    def calibration(self) -> CameraCalibration:
+        if self._calibration is None:
+            raise CameraOpenError("RealSense stream has not been started")
+        return self._calibration
+
+    @property
+    def hardware_id(self) -> str:
+        return self._hardware_id
 
     def open(self) -> None:
         now = self._clock()
@@ -95,34 +106,78 @@ class OpenCVCamera:
             wait = self._next_open_time_s - now
             raise CameraOpenError(f"camera reconnect backoff active for {wait:.3f}s")
 
+        pipeline = self._rs.pipeline()
+        sdk_config = self._rs.config()
+        if self.config.serial_number:
+            sdk_config.enable_device(self.config.serial_number)
+        sdk_config.enable_stream(
+            self._rs.stream.color,
+            self.config.width,
+            self.config.height,
+            self._rs.format.bgr8,
+            self.config.fps,
+        )
         try:
-            if self.config.backend >= 0:
-                capture = self._capture_factory(self.config.device, self.config.backend)
-            else:
-                capture = self._capture_factory(self.config.device)
-        except Exception as exc:  # OpenCV backends can raise backend-specific errors.
+            profile = pipeline.start(sdk_config)
+            video_profile = profile.get_stream(
+                self._rs.stream.color
+            ).as_video_stream_profile()
+            intrinsics = video_profile.get_intrinsics()
+            calibration = self._calibration_from_intrinsics(intrinsics)
+            self._hardware_id = self._device_hardware_id(profile)
+        except Exception as exc:
+            try:
+                pipeline.stop()
+            except Exception:
+                pass
             self._schedule_reopen(now)
-            raise CameraOpenError(f"failed to create camera capture: {exc}") from exc
-        if capture is None or not capture.isOpened():
-            if capture is not None:
-                capture.release()
-            self._schedule_reopen(now)
-            raise CameraOpenError(
-                f"unable to open camera device {self.config.device!r}"
-            )
+            raise CameraOpenError(f"failed to start RealSense color stream: {exc}") from exc
 
-        self._capture = capture
-        self._set_if_supported(cv2.CAP_PROP_FRAME_WIDTH, float(self.config.width))
-        self._set_if_supported(cv2.CAP_PROP_FRAME_HEIGHT, float(self.config.height))
-        self._set_if_supported(cv2.CAP_PROP_FPS, float(self.config.fps))
-        self._set_if_supported(cv2.CAP_PROP_BUFFERSIZE, float(self.config.buffer_size))
+        self._pipeline = pipeline
+        self._calibration = calibration
         self._consecutive_failures = 0
 
-    def _set_if_supported(self, prop_id: int, value: float) -> None:
-        if self._capture is not None:
-            # Some OpenCV backends return False for unsupported properties. The
-            # actual frame size is validated against calibration after capture.
-            self._capture.set(prop_id, value)
+    def _calibration_from_intrinsics(self, intrinsics: Any) -> CameraCalibration:
+        distortion_none = getattr(self._rs.distortion, "none")
+        distortion_brown = getattr(self._rs.distortion, "brown_conrady", None)
+        if intrinsics.model == distortion_none:
+            coefficients: list[float] = []
+        elif distortion_brown is not None and intrinsics.model == distortion_brown:
+            coefficients = [float(value) for value in intrinsics.coeffs]
+        else:
+            raise CameraOpenError(
+                "unsupported RealSense color distortion model for OpenCV pose "
+                f"solving: {intrinsics.model}"
+            )
+        matrix = np.array(
+            [
+                [intrinsics.fx, 0.0, intrinsics.ppx],
+                [0.0, intrinsics.fy, intrinsics.ppy],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        return CameraCalibration(
+            camera_matrix=matrix,
+            distortion_coefficients=np.asarray(coefficients, dtype=np.float64),
+            image_width=int(intrinsics.width),
+            image_height=int(intrinsics.height),
+            distortion_model="plumb_bob",
+        )
+
+    def _device_hardware_id(self, profile: Any) -> str:
+        device = profile.get_device()
+        parts: list[str] = []
+        for label, info in (
+            ("name", self._rs.camera_info.name),
+            ("serial", self._rs.camera_info.serial_number),
+        ):
+            try:
+                if device.supports(info):
+                    parts.append(f"{label}={device.get_info(info)}")
+            except Exception:
+                continue
+        return ", ".join(parts) or "Intel RealSense"
 
     def _schedule_reopen(self, now: float | None = None) -> None:
         current = self._clock() if now is None else now
@@ -131,22 +186,30 @@ class OpenCVCamera:
     def read(self) -> CameraFrame:
         if not self.is_open:
             self.open()
-        assert self._capture is not None
-        ok, image = self._capture.read()
-        capture_time = self._clock()
-        if not ok or image is None or image.size == 0:
+        assert self._pipeline is not None
+        try:
+            frames = self._pipeline.wait_for_frames(self.config.frame_timeout_ms)
+            color_frame = frames.get_color_frame()
+            if not color_frame:
+                raise RuntimeError("frameset does not contain a color frame")
+            image = np.asanyarray(color_frame.get_data())
+            capture_time = self._clock()
+            expected_shape = (self.config.height, self.config.width, 3)
+            if image.dtype != np.uint8 or image.shape != expected_shape:
+                raise RuntimeError(
+                    f"unexpected BGR frame shape or dtype: {image.shape}, {image.dtype}"
+                )
+        except Exception as exc:
             self._consecutive_failures += 1
-            if self._consecutive_failures >= self.config.reopen_after_failures:
+            failures = self._consecutive_failures
+            if failures >= self.config.reopen_after_failures:
                 self.close()
-                self._schedule_reopen(capture_time)
+                self._schedule_reopen()
             raise CameraReadError(
-                f"camera read failed ({self._consecutive_failures}/"
-                f"{self.config.reopen_after_failures})"
-            )
-        if image.ndim not in (2, 3):
-            raise CameraReadError(
-                f"camera returned an unsupported image shape: {image.shape}"
-            )
+                f"RealSense frame read failed ({failures}/"
+                f"{self.config.reopen_after_failures}): {exc}"
+            ) from exc
+
         self._consecutive_failures = 0
         self._sequence += 1
         return CameraFrame(
@@ -154,11 +217,16 @@ class OpenCVCamera:
         )
 
     def close(self) -> None:
-        if self._capture is not None:
-            self._capture.release()
-            self._capture = None
+        pipeline = self._pipeline
+        self._pipeline = None
+        self._calibration = None
+        if pipeline is not None:
+            try:
+                pipeline.stop()
+            except Exception:
+                pass
 
-    def __enter__(self) -> "OpenCVCamera":
+    def __enter__(self) -> "RealSenseCamera":
         self.open()
         return self
 
