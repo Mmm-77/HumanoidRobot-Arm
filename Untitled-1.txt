@@ -1,0 +1,10 @@
+cd /home/aphelia/Documents/HumanoidRobot-Arm
+
+# 设置 PYTHONPATH 后运行
+PYTHONPATH="upper_computer_ws/src/humanoid_arm_vision:upper_computer_ws/src/humanoid_arm_kinematics:$PYTHONPATH" \
+python3 scripts/integration_test.py
+
+# 可选参数
+python3 scripts/integration_test.py --tag-size 0.15    # Tag 边长 (米)
+python3 scripts/integration_test.py --tag-x 20 --tag-z -20   # Base 在 Tag 坐标系的位置
+python3 scripts/integration_test.py --tag-roll 0 --tag-pitch 90  # Tag 在墙上时的旋转

@@ -1,0 +1,33 @@
+# Modified DH parameters for the 4-DOF humanoid robot arm.
+# Convention: Modified DH (alpha_{i-1}, a_{i-1}, d_i, theta_i)
+#   T_i = Rot_X(alpha_{i-1}) * Trans_X(a_{i-1}) * Rot_Z(theta_i) * Trans_Z(d_i)
+# Angles in degrees, lengths in meters.
+
+dh_params:
+  # Link 1
+  - alpha_prev_deg: -90.0
+    a_prev_m: 0.2
+    d_m: 0.3
+  # Link 2
+  - alpha_prev_deg: 90.0
+    a_prev_m: 2.89
+    d_m: 5.0
+  # Link 3
+  - alpha_prev_deg: -90.0
+    a_prev_m: 0.0
+    d_m: 7.0
+  # Link 4
+  - alpha_prev_deg: 90.0
+    a_prev_m: 0.0
+    d_m: 3.5
+
+# The controllable orientation angle theta is defined as the end-effector
+# rotation about the base-frame Z axis (yaw), extracted from the FK rotation matrix.
+controllable_axis: "base_z"
+
+# Tool (end-effector) offset from the last joint frame.
+# Translation [x, y, z] in meters, rotation [roll, pitch, yaw] in degrees
+# about the last link frame axes.
+tool_offset:
+  translation: [0.0, 0.0, 0.0]
+  rotation_deg: [0.0, 0.0, 0.0]
