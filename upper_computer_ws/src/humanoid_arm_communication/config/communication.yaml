@@ -1,0 +1,48 @@
+communication_node:
+  ros__parameters:
+    # --- Serial port ---
+    serial.port: "/dev/ttyACM0"
+    serial.baudrate: 115200
+    serial.read_timeout_s: 0.01
+    serial.write_timeout_s: 0.05
+
+    # --- Processing rate (Hz) ---
+    # Must be fast enough to keep up with the lower computer's DMA receive cycle.
+    processing_rate_hz: 200.0
+
+    # --- Reconnect / timeout ---
+    reconnect.feedback_timeout_s: 0.5
+    reconnect.degraded_threshold_s: 0.2
+    reconnect.initial_backoff_s: 0.5
+    reconnect.max_backoff_s: 10.0
+    reconnect.backoff_multiplier: 2.0
+    reconnect.max_consecutive_crc_failures: 5
+
+    # --- MIT impedance control gains (per motor, sent to the lower computer) ---
+    # τ = Kp · (θ_target − θ_current) + Kd · (ω_target − ω_current) + Tff
+    # Motor 1 (joint_1)
+    mit.kp_1: 1.0
+    mit.kd_1: 0.05
+    mit.tff_1: 0.0
+    # Motor 2 (joint_2)
+    mit.kp_2: 1.0
+    mit.kd_2: 0.05
+    mit.tff_2: 0.0
+    # Motor 3 (joint_3)
+    mit.kp_3: 1.0
+    mit.kd_3: 0.05
+    mit.tff_3: 0.0
+    # Motor 4 (joint_4)
+    mit.kp_4: 1.0
+    mit.kd_4: 0.05
+    mit.tff_4: 0.0
+
+    # --- ROS 2 topics ---
+    topics.joint_command: "kinematics/joint_command"
+    topics.joint_state: "kinematics/joint_state"
+    topics.ctrl_mode: "communication/ctrl_mode"
+    topics.link_state: "communication/link_state"
+    topics.diagnostics: "communication/diagnostics"
+
+    # --- Frame ID ---
+    frame_id: "base"

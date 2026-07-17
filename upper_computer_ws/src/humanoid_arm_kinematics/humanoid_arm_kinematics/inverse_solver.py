@@ -35,6 +35,8 @@ class IKConfig:
         lambda_max: Maximum damping value.
         multi_start_attempts: Number of perturbed initial guesses.
         multi_start_perturbation_rad: Max perturbation for multi-start.
+        joint_angle_min_rad: Per-joint minimum allowed angle (rad). None = unbounded.
+        joint_angle_max_rad: Per-joint maximum allowed angle (rad). None = unbounded.
     """
 
     max_iterations: int = 200
@@ -47,6 +49,8 @@ class IKConfig:
     lambda_max: float = 1.0
     multi_start_attempts: int = 5
     multi_start_perturbation_rad: float = 0.3
+    joint_angle_min_rad: Optional[np.ndarray] = None
+    joint_angle_max_rad: Optional[np.ndarray] = None
 
     def __post_init__(self) -> None:
         if self.max_iterations < 1:
@@ -124,6 +128,14 @@ class InverseSolver:
     @property
     def config(self) -> IKConfig:
         return self._config
+
+    def _clamp(self, q: np.ndarray) -> np.ndarray:
+        """Clamp joint angles to configured limits (if any)."""
+        lo = self._config.joint_angle_min_rad
+        hi = self._config.joint_angle_max_rad
+        if lo is not None and hi is not None:
+            return np.clip(q, lo, hi)
+        return q
 
     def solve(
         self,
@@ -243,6 +255,7 @@ class InverseSolver:
 
             # Update
             q_new = q + delta_q
+            q_new = self._clamp(q_new)  # enforce joint limits
 
             # Evaluate new error
             fk_new = self._fk.solve(q_new)

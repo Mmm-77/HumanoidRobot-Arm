@@ -1,0 +1,40 @@
+runtime_node:
+  ros__parameters:
+    # Processing rate
+    processing_rate_hz: 60.0
+    frame_id: "base"
+
+    # --- Watchdog: data freshness thresholds ---
+    watchdog.vision_fresh_s: 0.2
+    watchdog.vision_stale_s: 0.5
+    watchdog.communication_fresh_s: 0.2
+    watchdog.communication_stale_s: 0.5
+    watchdog.ik_fresh_s: 0.5
+
+    # --- Safety: escalation thresholds ---
+    safety.max_vision_lost_frames: 10
+    safety.max_ik_failures: 5
+
+    # --- Baseline ---
+    baseline.max_pose_age_s: 0.2
+    baseline.max_joint_age_s: 0.2
+
+    # --- Follow mapper ---
+    # Axis signs: +1 = same direction, -1 = invert
+    follow.axis_sign_x: 1
+    follow.axis_sign_y: 1
+    follow.axis_sign_z: 1
+    follow.position_scale: 1.0
+
+    # --- Target projector: step size clipping ---
+    projector.max_position_step_m: 0.05
+    projector.max_yaw_step_rad: 0.1
+
+    # --- ROS 2 topics ---
+    topics.camera_pose: "vision/camera_pose"
+    topics.joint_state: "kinematics/joint_state"
+    topics.link_state: "communication/link_state"
+    topics.kinematics_target: "kinematics/target"
+    topics.ctrl_mode: "communication/ctrl_mode"
+    topics.state: "runtime/state"
+    topics.diagnostics: "runtime/diagnostics"

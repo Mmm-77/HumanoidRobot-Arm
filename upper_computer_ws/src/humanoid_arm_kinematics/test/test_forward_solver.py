@@ -7,12 +7,12 @@ from humanoid_arm_kinematics.forward_solver import ForwardResult, ForwardSolver,
 from humanoid_arm_kinematics.robot_model import RobotModel
 
 
-# Modified DH parameters from dh_parameters.md (modified table)
+# Modified DH parameters from dh_parameters.md (modified table, cm→m ÷100)
 DH_PARAMS = [
-    {"alpha_prev_deg": -90.0, "a_prev_m": 0.2, "d_m": 0.3},
-    {"alpha_prev_deg": 90.0, "a_prev_m": 2.89, "d_m": 5.0},
-    {"alpha_prev_deg": -90.0, "a_prev_m": 0.0, "d_m": 7.0},
-    {"alpha_prev_deg": 90.0, "a_prev_m": 0.0, "d_m": 3.5},
+    {"alpha_prev_deg": -90.0, "a_prev_m": 0.002, "d_m": 0.003},
+    {"alpha_prev_deg": 90.0, "a_prev_m": 0.0289, "d_m": 0.05},
+    {"alpha_prev_deg": -90.0, "a_prev_m": 0.0, "d_m": 0.07},
+    {"alpha_prev_deg": 90.0, "a_prev_m": 0.0, "d_m": 0.035},
 ]
 
 

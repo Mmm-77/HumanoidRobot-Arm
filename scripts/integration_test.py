@@ -57,17 +57,28 @@ from humanoid_arm_kinematics.forward_solver import ForwardSolver
 from humanoid_arm_kinematics.inverse_solver import IKConfig, InverseSolver
 from humanoid_arm_kinematics.jacobian import JacobianSolver
 from humanoid_arm_kinematics.robot_model import RobotModel
+from humanoid_arm_kinematics.solution_selector import JointLimits, SolutionSelector
 
 # --- DH 参数 ---
+# DH 参数 (原始单位 cm，已转换为 m → ÷100)
 DH_PARAMS = [
-    {"alpha_prev_deg": -90.0, "a_prev_m": 0.2, "d_m": 0.3},
-    {"alpha_prev_deg": 90.0, "a_prev_m": 2.89, "d_m": 5.0},
-    {"alpha_prev_deg": -90.0, "a_prev_m": 0.0, "d_m": 7.0},
-    {"alpha_prev_deg": 90.0, "a_prev_m": 0.0, "d_m": 3.5},
+    {"alpha_prev_deg": -90.0, "a_prev_m": 0.002, "d_m": 0.003},
+    {"alpha_prev_deg": 90.0, "a_prev_m": 0.0289, "d_m": 0.05},
+    {"alpha_prev_deg": -90.0, "a_prev_m": 0.0, "d_m": 0.07},
+    {"alpha_prev_deg": 90.0, "a_prev_m": 0.0, "d_m": 0.035},
 ]
 
-# Home 位姿 (零位) 作为参考关节角
-HOME_JOINTS_RAD = np.array([0.0, 0.5, -0.3, 0.3], dtype=np.float64)
+# Home 位姿 (编码器全零 = 准备跟随姿态)
+HOME_JOINTS_RAD = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+
+# 关节限位 (来自 MotorAngleDetectTask.c, 上位机 4 电机: 0x01~0x04)
+# 格式: (NegExtAngle_deg, PosExtAngle_deg) per joint
+JOINT_LIMITS_DEG = np.array([
+    [-85.0, 175.0],   # Motor 1 → J1
+    [-10.0, 150.0],   # Motor 2 → J2
+    [-100.0, 100.0],  # Motor 3 → J3
+    [-40.0, 100.0],   # Motor 4 → J4
+], dtype=np.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -176,14 +187,23 @@ class IntegrationTester:
         model = RobotModel.from_config(DH_PARAMS)
         self._fk = ForwardSolver(model)
         self._jac = JacobianSolver(model)
+        joint_limits = JointLimits(
+            angle_min_rad=np.deg2rad(JOINT_LIMITS_DEG[:, 0]),
+            angle_max_rad=np.deg2rad(JOINT_LIMITS_DEG[:, 1]),
+            max_velocity_rad_per_s=np.full(4, 3.0),  # ~172°/s
+        )
         ik_cfg = IKConfig(
             max_iterations=500,
             position_tolerance_m=0.005,
             orientation_tolerance_rad=0.05,
             multi_start_attempts=8,
             multi_start_perturbation_rad=0.5,
+            joint_angle_min_rad=joint_limits.angle_min_rad,
+            joint_angle_max_rad=joint_limits.angle_max_rad,
         )
         self._ik = InverseSolver(self._fk, self._jac, ik_cfg)
+        self._selector = SolutionSelector(joint_limits)
+        self._joint_limits = joint_limits
 
         # --- 状态 ---
         self._calibration: Optional[CalibrationState] = None
@@ -325,7 +345,10 @@ class IntegrationTester:
                 )
 
                 if ik_result.success:
-                    self._current_joints_rad = ik_result.joint_angles_rad.copy()
+                    # 额外安全层: 限位截断 + 连续解选择
+                    q_raw = ik_result.joint_angles_rad
+                    q_clamped = self._joint_limits.clamp(q_raw)
+                    self._current_joints_rad = q_clamped.copy()
                     self._solve_count += 1
 
                     joints_deg = np.rad2deg(ik_result.joint_angles_rad)
@@ -521,14 +544,14 @@ class IntegrationTester:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="AprilTag → IK 集成测试")
-    parser.add_argument("--tag-size", type=float, default=0.15,
-                        help="AprilTag 边长 (米), 默认 0.15")
-    parser.add_argument("--tag-x", type=float, default=20.0,
-                        help="Base 在 Tag 坐标系下的 X (米)")
+    parser.add_argument("--tag-size", type=float, default=0.07,
+                        help="AprilTag 边长 (米), 默认 0.07 (7cm)")
+    parser.add_argument("--tag-x", type=float, default=0.2,
+                        help="Base 在 Tag 坐标系下的 X (米), 默认 0.2 (20cm)")
     parser.add_argument("--tag-y", type=float, default=0.0,
-                        help="Base 在 Tag 坐标系下的 Y (米)")
-    parser.add_argument("--tag-z", type=float, default=-20.0,
-                        help="Base 在 Tag 坐标系下的 Z (米)")
+                        help="Base 在 Tag 坐标系下的 Y (米), 默认 0.0")
+    parser.add_argument("--tag-z", type=float, default=-0.2,
+                        help="Base 在 Tag 坐标系下的 Z (米), 默认 -0.2 (20cm)")
     parser.add_argument("--tag-roll", type=float, default=0.0,
                         help="Tag→Base 旋转 Roll (度)")
     parser.add_argument("--tag-pitch", type=float, default=0.0,
