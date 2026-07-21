@@ -18,23 +18,27 @@
 
   <link name="link_1">
     <inertial><mass value="0.20"/><inertia ixx="0.0002" ixy="0" ixz="0" iyy="0.0002" iyz="0" izz="0.0001"/></inertial>
-    <visual><geometry><cylinder radius="0.012" length="0.05"/></geometry><material name="link_silver"/></visual>
-    <collision><geometry><cylinder radius="0.012" length="0.05"/></geometry></collision>
+    <!-- Cosmetic bar from MDH frame 1 to frame 2. -->
+    <visual><origin xyz="0.01445 -0.025 0" rpy="0 1.57079632679 -1.047071"/><geometry><cylinder radius="0.006" length="0.05775"/></geometry><material name="link_silver"/></visual>
+    <visual><geometry><sphere radius="0.011"/></geometry><material name="base_blue"/></visual>
+    <collision><origin xyz="0.01445 -0.025 0" rpy="0 1.57079632679 -1.047071"/><geometry><cylinder radius="0.006" length="0.05775"/></geometry></collision>
   </link>
   <link name="link_2">
     <inertial><mass value="0.18"/><inertia ixx="0.0002" ixy="0" ixz="0" iyy="0.0002" iyz="0" izz="0.0001"/></inertial>
-    <visual><geometry><cylinder radius="0.011" length="0.07"/></geometry><material name="link_silver"/></visual>
-    <collision><geometry><cylinder radius="0.011" length="0.07"/></geometry></collision>
+    <visual><origin xyz="0 0.035 0" rpy="0 1.57079632679 1.57079632679"/><geometry><cylinder radius="0.006" length="0.07"/></geometry><material name="link_silver"/></visual>
+    <visual><geometry><sphere radius="0.010"/></geometry><material name="base_blue"/></visual>
+    <collision><origin xyz="0 0.035 0" rpy="0 1.57079632679 1.57079632679"/><geometry><cylinder radius="0.006" length="0.07"/></geometry></collision>
   </link>
   <link name="link_3">
     <inertial><mass value="0.14"/><inertia ixx="0.00015" ixy="0" ixz="0" iyy="0.00015" iyz="0" izz="0.00008"/></inertial>
-    <visual><geometry><cylinder radius="0.010" length="0.07"/></geometry><material name="link_silver"/></visual>
-    <collision><geometry><cylinder radius="0.010" length="0.07"/></geometry></collision>
+    <visual><origin xyz="0 -0.0175 0" rpy="0 1.57079632679 -1.57079632679"/><geometry><cylinder radius="0.0055" length="0.035"/></geometry><material name="link_silver"/></visual>
+    <visual><geometry><sphere radius="0.009"/></geometry><material name="base_blue"/></visual>
+    <collision><origin xyz="0 -0.0175 0" rpy="0 1.57079632679 -1.57079632679"/><geometry><cylinder radius="0.0055" length="0.035"/></geometry></collision>
   </link>
   <link name="link_4">
     <inertial><mass value="0.10"/><inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.00005"/></inertial>
-    <visual><geometry><cylinder radius="0.009" length="0.035"/></geometry><material name="link_silver"/></visual>
-    <collision><geometry><cylinder radius="0.009" length="0.035"/></geometry></collision>
+    <visual><geometry><sphere radius="0.009"/></geometry><material name="base_blue"/></visual>
+    <collision><geometry><sphere radius="0.009"/></geometry></collision>
   </link>
   <link name="tool_link">
     <inertial><mass value="0.05"/><inertia ixx="0.00002" ixy="0" ixz="0" iyy="0.00002" iyz="0" izz="0.00002"/></inertial>
@@ -42,7 +46,12 @@
     <collision><geometry><sphere radius="0.015"/></geometry></collision>
   </link>
 
-  <!-- Each origin implements RotX(alpha) TransX(a) TransZ(d), followed by RotZ(theta). -->
+  <!--
+    Modified-DH transform for every row:
+      RotX(alpha[i-1]) * TransX(a[i-1]) * RotZ(theta[i]) * TransZ(d[i])
+    RotZ(theta) and TransZ(d) commute.  In URDF the fixed origin translation is
+    therefore [a, -d*sin(alpha), d*cos(alpha)], followed by the Z-axis joint.
+  -->
   <joint name="joint_1" type="revolute">
     <parent link="base_link"/><child link="link_1"/>
     <origin xyz="0.002 0.003 0" rpy="-1.57079632679 0 0"/><axis xyz="0 0 1"/>

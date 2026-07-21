@@ -2,7 +2,7 @@
 <package format="3">
   <name>humanoid_arm_description</name>
   <version>0.1.0</version>
-  <description>Gazebo Classic model and display-only joint driver for the humanoid arm.</description>
+  <description>URDF, RViz joint-control demo, and Gazebo Classic model for the 4-DOF humanoid arm.</description>
 
   <maintainer email="dev@humanoid-arm.local">HumanoidRobot Team</maintainer>
   <license>Apache-2.0</license>
@@ -18,7 +18,10 @@
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>joint_state_publisher</exec_depend>
+  <exec_depend>joint_state_publisher_gui</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>rviz2</exec_depend>
   <exec_depend>humanoid_arm_kinematics</exec_depend>
   <exec_depend>humanoid_arm_runtime</exec_depend>
   <exec_depend>humanoid_arm_vision</exec_depend>
