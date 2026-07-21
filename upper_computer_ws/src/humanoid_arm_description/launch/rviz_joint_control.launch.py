@@ -1,4 +1,4 @@
-"""Display the 4-DOF MDH arm in RViz with draggable joint sliders.
+"""Display the 4-DOF arm in RViz with draggable joint sliders.
 
 The launch API used here is available in ROS 2 Foxy.  No xacro processing or
 newer launch substitutions are required.

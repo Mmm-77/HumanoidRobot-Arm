@@ -38,4 +38,11 @@ install(DIRECTORY config launch urdf worlds
 )
 install(FILES README.md DESTINATION share/${PROJECT_NAME})
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_zero_pose_geometry
+    test/test_zero_pose_geometry.py
+  )
+endif()
+
 ament_package()

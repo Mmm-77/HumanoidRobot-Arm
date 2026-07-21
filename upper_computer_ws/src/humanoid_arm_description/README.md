@@ -2,15 +2,21 @@
 
 ## RViz 4-DOF joint control (ROS 2 Foxy)
 
-The URDF implements the four rows in `dh_parameters.md` using the Modified-DH
-convention. Lengths are converted from centimetres to metres:
+The URDF is defined directly from the joint-axis geometry at the zero
+configuration. Coordinates are in metres and directions are expressed in the
+base frame at zero position:
 
-| joint | alpha (deg) | a (m) | d (m) |
-|---|---:|---:|---:|
-| joint_1 | -90 | 0.0020 | 0.003 |
-| joint_2 | 90 | 0.0289 | 0.050 |
-| joint_3 | -90 | 0 | 0.070 |
-| joint_4 | 90 | 0 | 0.035 |
+| joint | point (m) | axis direction |
+|---|---|---|
+| joint_1 | `(0, 0, 0)` | `(0, 0.5, 0.8660254)` |
+| joint_2 | `(0, -0.05, 0)` | `(1, 0, 0)` |
+| joint_3 | `(0, -0.05, -0.07)` | `(0, 0, 1)` |
+| joint_4 | `(0, -0.05, -0.105)` | `(0, 1, 0)` |
+
+All link frames are parallel to `base_link` at zero position. Joint origins are
+relative to their parent links: `(0,0,0)`, `(0,-0.05,0)`, `(0,0,-0.07)`, and
+`(0,0,-0.035)`. This makes the zero-position axes reproduce the absolute data
+above without inferring directions from link lengths.
 
 Use Ubuntu 20.04 with ROS 2 Foxy. Install the declared dependencies and build
 the workspace:
