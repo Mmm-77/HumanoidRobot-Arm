@@ -36,6 +36,9 @@ install(TARGETS humanoid_arm_gazebo_joint_driver
 install(DIRECTORY config launch urdf worlds
   DESTINATION share/${PROJECT_NAME}
 )
+install(PROGRAMS scripts/tip_position_gui.py
+  DESTINATION lib/${PROJECT_NAME}
+)
 install(FILES README.md DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)

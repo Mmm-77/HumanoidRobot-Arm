@@ -63,5 +63,11 @@ def generate_launch_description():
                 output="screen",
                 arguments=["-d", rviz_config],
             ),
+            Node(
+                package="humanoid_arm_description",
+                executable="tip_position_gui.py",
+                name="tip_position_gui",
+                output="screen",
+            ),
         ]
     )
