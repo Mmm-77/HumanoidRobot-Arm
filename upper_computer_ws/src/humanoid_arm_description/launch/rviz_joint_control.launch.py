@@ -20,9 +20,11 @@ def generate_launch_description():
         encoding="utf-8"
     )
     rviz_config = str(package_share / "config" / "humanoid_arm.rviz")
+    jsp_config = str(package_share / "config" / "joint_state_publisher.yaml")
     use_gui = LaunchConfiguration("use_gui")
 
-    common_parameters = [{"robot_description": robot_description}]
+    rsp_parameters = [{"robot_description": robot_description}]
+    jsp_parameters = [{"robot_description": robot_description, "rate": 30.0}]
 
     return LaunchDescription(
         [
@@ -36,14 +38,14 @@ def generate_launch_description():
                 executable="robot_state_publisher",
                 name="robot_state_publisher",
                 output="screen",
-                parameters=common_parameters,
+                parameters=rsp_parameters,
             ),
             Node(
                 package="joint_state_publisher_gui",
                 executable="joint_state_publisher_gui",
                 name="joint_state_publisher_gui",
                 output="screen",
-                parameters=common_parameters,
+                parameters=[rsp_parameters[0], jsp_config],
                 condition=IfCondition(use_gui),
             ),
             Node(
@@ -51,7 +53,7 @@ def generate_launch_description():
                 executable="joint_state_publisher",
                 name="joint_state_publisher",
                 output="screen",
-                parameters=common_parameters,
+                parameters=jsp_parameters,
                 condition=UnlessCondition(use_gui),
             ),
             Node(
