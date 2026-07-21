@@ -1,88 +1,92 @@
-"""Tests for forward kinematics solver."""
+"""Regression tests for URDF-backed FK and the position Jacobian."""
+
+from pathlib import Path
+import unittest
 
 import numpy as np
-import pytest
 
-from humanoid_arm_kinematics.forward_solver import ForwardResult, ForwardSolver, ForwardSolverError
+from humanoid_arm_kinematics.forward_solver import ForwardSolver, ForwardSolverError
+from humanoid_arm_kinematics.jacobian import JacobianSolver
 from humanoid_arm_kinematics.robot_model import RobotModel
 
 
-# Modified DH parameters from dh_parameters.md (modified table, cm→m ÷100)
-DH_PARAMS = [
-    {"alpha_prev_deg": -90.0, "a_prev_m": 0.002, "d_m": 0.003},
-    {"alpha_prev_deg": 90.0, "a_prev_m": 0.0289, "d_m": 0.05},
-    {"alpha_prev_deg": -90.0, "a_prev_m": 0.0, "d_m": 0.07},
-    {"alpha_prev_deg": 90.0, "a_prev_m": 0.0, "d_m": 0.035},
-]
+URDF_PATH = (
+    Path(__file__).parents[2]
+    / "humanoid_arm_description"
+    / "urdf"
+    / "humanoid_arm.urdf"
+)
 
 
-@pytest.fixture
-def model() -> RobotModel:
-    return RobotModel.from_config(DH_PARAMS)
+class TestForwardSolver(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.model = RobotModel.from_urdf_file(URDF_PATH)
+        cls.solver = ForwardSolver(cls.model)
+        cls.jacobian = JacobianSolver(cls.model)
+
+    def test_chain_is_selected_from_urdf(self) -> None:
+        self.assertEqual(
+            self.model.joint_names,
+            ["joint_1", "joint_2", "joint_3", "joint_4"],
+        )
+        self.assertEqual(self.model.base_link, "base_link")
+        self.assertEqual(self.model.tip_link, "tip_frame")
+
+    def test_zero_pose_matches_urdf_geometry(self) -> None:
+        result = self.solver.solve(np.zeros(4))
+        np.testing.assert_allclose(result.position, [0.0, -0.05, -0.375], atol=1e-12)
+        np.testing.assert_allclose(result.rotation, np.eye(3), atol=1e-12)
+
+    def test_joint_axes_at_zero_match_urdf(self) -> None:
+        state = self.model.evaluate(np.zeros(4))
+        expected_positions = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, -0.05, 0.0],
+                [0.0, -0.05, -0.07],
+                [0.0, -0.05, -0.105],
+            ]
+        )
+        expected_axes = np.array(
+            [
+                [0.0, -0.8660254, 0.5],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.0, 1.0, 0.0],
+            ]
+        )
+        expected_axes /= np.linalg.norm(expected_axes, axis=1)[:, None]
+        np.testing.assert_allclose(
+            state.joint_positions, expected_positions, atol=1e-12
+        )
+        np.testing.assert_allclose(state.joint_axes, expected_axes, atol=1e-8)
+
+    def test_position_jacobian_matches_finite_difference(self) -> None:
+        angles = np.array([0.31, 0.67, -0.42, 0.58])
+        analytic = self.jacobian.compute(angles).jacobian_task
+        numeric = np.zeros_like(analytic)
+        epsilon = 1e-7
+        for index in range(4):
+            plus = angles.copy()
+            minus = angles.copy()
+            plus[index] += epsilon
+            minus[index] -= epsilon
+            numeric[:, index] = (
+                self.solver.solve(plus).position - self.solver.solve(minus).position
+            ) / (2.0 * epsilon)
+        np.testing.assert_allclose(analytic, numeric, atol=1e-7)
+
+    def test_quaternion_is_normalized(self) -> None:
+        quaternion = self.solver.solve([0.2, 0.5, -0.3, 0.4]).quaternion_xyzw
+        self.assertAlmostEqual(float(np.linalg.norm(quaternion)), 1.0, places=12)
+
+    def test_rejects_invalid_angles(self) -> None:
+        with self.assertRaises(ForwardSolverError):
+            self.solver.solve([0.0, 0.0, 0.0])
+        with self.assertRaises(ForwardSolverError):
+            self.solver.solve([0.0, np.nan, 0.0, 0.0])
 
 
-@pytest.fixture
-def solver(model: RobotModel) -> ForwardSolver:
-    return ForwardSolver(model)
-
-
-class TestForwardSolver:
-    def test_zero_angles_produces_finite_pose(self, solver: ForwardSolver) -> None:
-        """Zero joint angles should produce a finite, valid FK result."""
-        result = solver.solve(np.zeros(4))
-
-        assert isinstance(result, ForwardResult)
-        assert np.all(np.isfinite(result.position))
-        assert np.all(np.isfinite(result.rotation))
-        assert np.all(np.isfinite(result.quaternion_xyzw))
-        assert np.isfinite(result.yaw_rad)
-
-    def test_quaternion_is_normalized(self, solver: ForwardSolver) -> None:
-        """FK quaternion output must be unit length."""
-        result = solver.solve(np.array([0.1, 0.2, 0.3, 0.4]))
-        norm = float(np.linalg.norm(result.quaternion_xyzw))
-        assert abs(norm - 1.0) < 1e-12
-
-    def test_transform_is_valid_homogeneous(self, solver: ForwardSolver) -> None:
-        """The FK transform must be a valid 4x4 homogeneous matrix."""
-        result = solver.solve(np.array([0.5, -0.3, 1.0, -0.7]))
-        T = result.transform
-        assert T.shape == (4, 4)
-        # Bottom row must be [0, 0, 0, 1]
-        assert np.allclose(T[3, :], [0, 0, 0, 1])
-        # Rotation submatrix must be orthogonal
-        R = T[:3, :3]
-        assert np.allclose(R @ R.T, np.eye(3), atol=1e-10)
-
-    def test_fk_consistency_with_same_angles(self, solver: ForwardSolver) -> None:
-        """Repeated FK with the same angles should give identical results."""
-        angles = np.array([0.2, 0.5, -0.8, 1.2])
-        r1 = solver.solve(angles)
-        r2 = solver.solve(angles)
-        assert np.allclose(r1.position, r2.position)
-        assert np.allclose(r1.quaternion_xyzw, r2.quaternion_xyzw)
-
-    def test_rejects_wrong_number_of_angles(self, solver: ForwardSolver) -> None:
-        """Passing the wrong number of joint angles raises an error."""
-        with pytest.raises(ForwardSolverError):
-            solver.solve(np.array([0.0, 0.0, 0.0]))  # 3 instead of 4
-
-    def test_rejects_nonfinite_angles(self, solver: ForwardSolver) -> None:
-        """Non-finite joint angles raise an error."""
-        with pytest.raises(ForwardSolverError):
-            solver.solve(np.array([0.0, np.nan, 0.0, 0.0]))
-        with pytest.raises(ForwardSolverError):
-            solver.solve(np.array([0.0, np.inf, 0.0, 0.0]))
-
-    def test_yaw_matches_transform_rotation(self, solver: ForwardSolver) -> None:
-        """The extracted yaw should match atan2(R[1,0], R[0,0])."""
-        angles = np.array([0.3, 1.0, -0.5, 0.8])
-        result = solver.solve(angles)
-        expected_yaw = float(np.arctan2(result.rotation[1, 0], result.rotation[0, 0]))
-        assert abs(result.yaw_rad - expected_yaw) < 1e-12
-
-    def test_position_changes_with_joint_angles(self, solver: ForwardSolver) -> None:
-        """Different joint angles should produce different positions."""
-        r1 = solver.solve(np.array([0.0, 0.0, 0.0, 0.0]))
-        r2 = solver.solve(np.array([0.5, 0.5, 0.5, 0.5]))
-        assert not np.allclose(r1.position, r2.position)
+if __name__ == "__main__":
+    unittest.main()

@@ -1,4 +1,6 @@
-"""Launch file to run the kinematics node independently for offline testing."""
+"""Run the URDF-backed position kinematics node."""
+
+from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -8,29 +10,17 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description() -> LaunchDescription:
-    pkg_share = get_package_share_directory("humanoid_arm_kinematics")
-
-    config_arg = DeclareLaunchArgument(
+    package_share = Path(get_package_share_directory("humanoid_arm_kinematics"))
+    config_argument = DeclareLaunchArgument(
         "config",
-        default_value=f"{pkg_share}/config/kinematics.yaml",
-        description="Path to the kinematics configuration YAML file.",
+        default_value=str(package_share / "config" / "kinematics.yaml"),
+        description="Path to the kinematics configuration YAML file",
     )
-
-    limits_arg = DeclareLaunchArgument(
-        "limits_config",
-        default_value=f"{pkg_share}/config/joint_limits.yaml",
-        description="Path to the joint limits configuration YAML file.",
-    )
-
-    kinematics_node = Node(
+    node = Node(
         package="humanoid_arm_kinematics",
         executable="kinematics_node",
         name="kinematics_node",
         output="screen",
-        parameters=[{
-            "config_file": LaunchConfiguration("config"),
-            "limits_config_file": LaunchConfiguration("limits_config"),
-        }],
+        parameters=[{"config_file": LaunchConfiguration("config")}],
     )
-
-    return LaunchDescription([config_arg, limits_arg, kinematics_node])
+    return LaunchDescription([config_argument, node])

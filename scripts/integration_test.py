@@ -4,7 +4,7 @@
 管线:
   RealSense 相机 → AprilTag 检测 → PnP 位姿解算 (camera in tag frame)
   → 坐标变换到 base frame → 相对增量计算 (自校准)
-  → [x,y,z,yaw] 4-DOF 目标 → 逆运动学 → 关节角度输出
+  → [x,y,z] 末端位置目标 → 冗余逆运动学 → 关节角度输出
 
 可视化:
   OpenCV 窗口实时显示相机画面、AprilTag 检测框、位姿信息和关节角度。
@@ -24,6 +24,7 @@ import signal
 import sys
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 # --- ROS / OpenCV 路径设置 (与 vision_node 一致) ---
@@ -41,6 +42,7 @@ if _ros_lib not in _ld_path:
 
 import cv2
 import numpy as np
+from ament_index_python.packages import get_package_share_directory
 
 # --- 视觉包 ---
 from humanoid_arm_vision.apriltag_detector import (
@@ -57,28 +59,15 @@ from humanoid_arm_kinematics.forward_solver import ForwardSolver
 from humanoid_arm_kinematics.inverse_solver import IKConfig, InverseSolver
 from humanoid_arm_kinematics.jacobian import JacobianSolver
 from humanoid_arm_kinematics.robot_model import RobotModel
-from humanoid_arm_kinematics.solution_selector import JointLimits, SolutionSelector
 
 # --- DH 参数 ---
 # DH 参数 (原始单位 cm，已转换为 m → ÷100)
-DH_PARAMS = [
-    {"alpha_prev_deg": -90.0, "a_prev_m": 0.002, "d_m": 0.003},
-    {"alpha_prev_deg": 90.0, "a_prev_m": 0.0289, "d_m": 0.05},
-    {"alpha_prev_deg": -90.0, "a_prev_m": 0.0, "d_m": 0.07},
-    {"alpha_prev_deg": 90.0, "a_prev_m": 0.0, "d_m": 0.035},
-]
 
 # Home 位姿 (编码器全零 = 准备跟随姿态)
 HOME_JOINTS_RAD = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float64)
 
 # 关节限位 (来自 MotorAngleDetectTask.c, 上位机 4 电机: 0x01~0x04)
 # 格式: (NegExtAngle_deg, PosExtAngle_deg) per joint
-JOINT_LIMITS_DEG = np.array([
-    [-85.0, 175.0],   # Motor 1 → J1
-    [-10.0, 150.0],   # Motor 2 → J2
-    [-100.0, 100.0],  # Motor 3 → J3
-    [-40.0, 100.0],   # Motor 4 → J4
-], dtype=np.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -184,26 +173,23 @@ class IntegrationTester:
         self._T_base_to_tag = np.linalg.inv(self._T_tag_to_base)
 
         # --- 运动学 ---
-        model = RobotModel.from_config(DH_PARAMS)
+        description_share = Path(
+            get_package_share_directory("humanoid_arm_description")
+        )
+        model = RobotModel.from_urdf_file(
+            description_share / "urdf" / "humanoid_arm.urdf",
+            base_link="base_link",
+            tip_link="tip_frame",
+        )
         self._fk = ForwardSolver(model)
         self._jac = JacobianSolver(model)
-        joint_limits = JointLimits(
-            angle_min_rad=np.deg2rad(JOINT_LIMITS_DEG[:, 0]),
-            angle_max_rad=np.deg2rad(JOINT_LIMITS_DEG[:, 1]),
-            max_velocity_rad_per_s=np.full(4, 3.0),  # ~172°/s
-        )
         ik_cfg = IKConfig(
             max_iterations=500,
             position_tolerance_m=0.005,
-            orientation_tolerance_rad=0.05,
             multi_start_attempts=8,
             multi_start_perturbation_rad=0.5,
-            joint_angle_min_rad=joint_limits.angle_min_rad,
-            joint_angle_max_rad=joint_limits.angle_max_rad,
         )
         self._ik = InverseSolver(self._fk, self._jac, ik_cfg)
-        self._selector = SolutionSelector(joint_limits)
-        self._joint_limits = joint_limits
 
         # --- 状态 ---
         self._calibration: Optional[CalibrationState] = None
@@ -327,28 +313,22 @@ class IntegrationTester:
 
         if pose_estimate is not None and self._calibration is not None:
             try:
-                cam_pos, cam_yaw = self._transform_to_base(pose_estimate)
+                cam_pos, _ = self._transform_to_base(pose_estimate)
 
                 # 相对跟随: 计算增量
                 delta_pos = cam_pos - self._calibration.camera_position
-                delta_yaw = yaw_difference(cam_yaw, self._calibration.camera_yaw_rad)
 
                 target_pos = self._calibration.ee_position + delta_pos
-                target_yaw = self._calibration.ee_yaw_rad + delta_yaw
-                target_yaw = (target_yaw + math.pi) % (2 * math.pi) - math.pi
 
                 # Step 4: 逆运动学
                 ik_result = self._ik.solve(
                     target_pos,
-                    target_yaw,
-                    initial_guess_rad=self._current_joints_rad,
+                    self._current_joints_rad,
                 )
 
                 if ik_result.success:
                     # 额外安全层: 限位截断 + 连续解选择
-                    q_raw = ik_result.joint_angles_rad
-                    q_clamped = self._joint_limits.clamp(q_raw)
-                    self._current_joints_rad = q_clamped.copy()
+                    self._current_joints_rad = ik_result.joint_angles_rad.copy()
                     self._solve_count += 1
 
                     joints_deg = np.rad2deg(ik_result.joint_angles_rad)
@@ -357,10 +337,9 @@ class IntegrationTester:
                         f"J3:{joints_deg[2]: 6.1f}  J4:{joints_deg[3]: 6.1f}"
                     )
                     pos_err = ik_result.position_error_m
-                    ori_err = ik_result.orientation_error_rad
                     error_text = (
-                        f"pos_err:{pos_err*1000:.1f}mm  ori_err:{math.degrees(ori_err):.1f}°  "
-                        f"iter:{ik_result.iterations}"
+                        f"pos_err:{pos_err*1000:.1f}mm  "
+                        f"iter:{ik_result.iterations}  orientation:ignored"
                     )
                 else:
                     self._fail_count += 1

@@ -11,7 +11,7 @@ setup(
     packages=find_packages(exclude=("test",)),
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{PACKAGE_NAME}"]),
-        (f"share/{PACKAGE_NAME}", ["package.xml"]),
+        (f"share/{PACKAGE_NAME}", ["package.xml", "README.md"]),
         (f"share/{PACKAGE_NAME}/config", glob("config/*.yaml")),
         (f"share/{PACKAGE_NAME}/launch", glob("launch/*.launch.py")),
     ],

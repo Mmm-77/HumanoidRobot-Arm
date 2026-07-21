@@ -1,125 +1,92 @@
-"""ROS 2 node that owns the complete kinematics pipeline.
+"""ROS 2 node for URDF-backed position kinematics.
 
-Subscribes to task-space targets from the runtime package and publishes
-joint-angle / joint-velocity commands for the communication package.
+The target interface remains ``PoseStamped`` for compatibility, but only the
+position is controlled.  Target orientation is intentionally ignored.
 """
 
 from __future__ import annotations
 
-import os
+from pathlib import Path
+from typing import Any, Dict, Iterable, Optional
 
-_ros_lib = "/opt/ros/foxy/lib"
-_ld_path = os.environ.get("LD_LIBRARY_PATH", "")
-if _ros_lib not in _ld_path:
-    _extra = (
-        "/opt/ros/foxy/opt/yaml_cpp_vendor/lib"
-        ":/opt/ros/foxy/opt/rviz_ogre_vendor/lib"
-        ":/opt/ros/foxy/lib/x86_64-linux-gnu"
-    )
-    os.environ["LD_LIBRARY_PATH"] = (
-        f"{_ros_lib}:{_extra}:{_ld_path}" if _ld_path else f"{_ros_lib}:{_extra}"
-    )
-
-import math
-from typing import Any, Iterable, Optional
-
+from ament_index_python.packages import get_package_share_directory
 import numpy as np
 import rclpy
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Point, PoseStamped
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from visualization_msgs.msg import Marker, MarkerArray
 import yaml
 
 from .forward_solver import ForwardSolver
 from .inverse_solver import IKConfig, InverseSolver
 from .jacobian import JacobianSolver
-from .robot_model import RobotModel
-from .solution_selector import JointLimits, SolutionSelector
-from .solution_validator import SolutionValidator
+from .robot_model import ModelError, RobotModel
 from .target_shaper import ShaperConfig, TargetShaper
-from .workspace_guard import GuardReason, WorkspaceGuard
 
 
 class KinematicsNode(Node):
-    """ROS 2 node for the kinematics pipeline.
-
-    Pipeline:
-      PoseStamped target → WorkspaceGuard → InverseSolver (multi-start)
-        → SolutionSelector → SolutionValidator → TargetShaper
-        → JointTrajectory published
-    """
+    """Solve ``tip_frame`` position targets and publish joint commands/FK."""
 
     def __init__(self) -> None:
         super().__init__("kinematics_node")
         self._declare_parameters()
-        self._load_config_files()
+        self._load_config_file()
         self._load_model()
-        self._load_limits()
         self._build_pipeline()
-        self._setup_ros()
         self._last_joint_angles: Optional[np.ndarray] = None
-
-    # ------------------------------------------------------------------
-    # Construction helpers
-    # ------------------------------------------------------------------
+        self._latest_target: Optional[PoseStamped] = None
+        self._setup_ros()
 
     def _declare_parameters(self) -> None:
-        defaults: dict[str, object] = {
+        defaults = {
             "config_file": "",
-            "limits_config_file": "",
             "processing_rate_hz": 30.0,
+            "model.description_package": "humanoid_arm_description",
+            "model.urdf_relative_path": "urdf/humanoid_arm.urdf",
+            "model.base_link": "base_link",
+            "model.tip_link": "tip_frame",
+            "frame_id.base": "base_link",
             "topics.target": "kinematics/target",
             "topics.joint_command": "kinematics/joint_command",
             "topics.joint_state": "kinematics/joint_state",
+            "topics.simulated_joint_state": "joint_states",
             "topics.end_effector_pose": "kinematics/end_effector_pose",
             "topics.diagnostics": "kinematics/diagnostics",
-            "frame_id.base": "base",
-            "dh_params": [],
-            "tool_offset.translation": [0.0, 0.0, 0.0],
-            "tool_offset.rotation_deg": [0.0, 0.0, 0.0],
-            "controllable_axis": "base_z",
-            # IK solver
-            "ik_solver.max_iterations": 200,
+            "topics.visualization": "kinematics/visualization",
+            "simulation.publish_joint_states": False,
+            "ik_solver.max_iterations": 250,
             "ik_solver.position_tolerance_m": 0.001,
-            "ik_solver.orientation_tolerance_rad": 0.01,
-            "ik_solver.initial_lambda": 0.1,
+            "ik_solver.initial_lambda": 0.03,
             "ik_solver.lambda_increase_factor": 2.0,
             "ik_solver.lambda_decrease_factor": 0.5,
-            "ik_solver.lambda_min": 1e-6,
+            "ik_solver.lambda_min": 1e-5,
             "ik_solver.lambda_max": 1.0,
-            "ik_solver.multi_start_attempts": 5,
-            "ik_solver.multi_start_perturbation_rad": 0.3,
-            # Singularity
-            "singularity.manipulability_threshold": 0.001,
-            # Validation
+            "ik_solver.multi_start_attempts": 8,
+            "ik_solver.multi_start_perturbation_rad": 0.5,
+            "ik_solver.continuity_gain": 0.02,
+            "ik_solver.max_step_rad": 0.25,
             "validation.max_position_error_m": 0.005,
-            "validation.max_orientation_error_rad": 0.02,
-            # Shaper
             "shaper.position_dead_zone_m": 0.001,
-            "shaper.orientation_dead_zone_rad": 0.005,
             "shaper.max_position_step_m": 0.05,
-            "shaper.max_orientation_step_rad": 0.1,
             "shaper.position_alpha": 0.3,
-            "shaper.orientation_alpha": 0.3,
-            # Joint limits
-            "joints.joint_1.angle_min_deg": -85.0,
-            "joints.joint_1.angle_max_deg": 175.0,
-            "joints.joint_1.max_velocity_deg_per_s": 180.0,
-            "joints.joint_2.angle_min_deg": -10.0,
-            "joints.joint_2.angle_max_deg": 150.0,
-            "joints.joint_2.max_velocity_deg_per_s": 180.0,
-            "joints.joint_3.angle_min_deg": -100.0,
-            "joints.joint_3.angle_max_deg": 100.0,
-            "joints.joint_3.max_velocity_deg_per_s": 180.0,
-            "joints.joint_4.angle_min_deg": -40.0,
-            "joints.joint_4.angle_max_deg": 100.0,
-            "joints.joint_4.max_velocity_deg_per_s": 180.0,
         }
         for name, default in defaults.items():
             self.declare_parameter(name, default)
+
+    def _load_config_file(self) -> None:
+        self._config: Dict[str, Any] = {}
+        path = str(self.get_parameter("config_file").value)
+        if not path:
+            return
+        with open(path, "r", encoding="utf-8") as stream:
+            loaded = yaml.safe_load(stream) or {}
+        if not isinstance(loaded, dict):
+            raise ValueError(f"{path} must contain a YAML mapping")
+        self._config = loaded
 
     def _value(self, name: str) -> Any:
         value: Any = self._config
@@ -129,433 +96,338 @@ class KinematicsNode(Node):
             value = value[part]
         return value
 
-    def _load_config_files(self) -> None:
-        """Load structured model configuration outside the ROS parameter type system."""
-        self._config: dict[str, Any] = {}
-        for parameter_name in ("config_file", "limits_config_file"):
-            path = str(self.get_parameter(parameter_name).value)
-            if not path:
-                continue
-            with open(path, "r", encoding="utf-8") as stream:
-                loaded = yaml.safe_load(stream) or {}
-            if not isinstance(loaded, dict):
-                raise ValueError(f"{path} must contain a YAML mapping")
-            self._merge_config(self._config, loaded)
-
-    @staticmethod
-    def _merge_config(target: dict[str, Any], source: dict[str, Any]) -> None:
-        for key, value in source.items():
-            if isinstance(value, dict) and isinstance(target.get(key), dict):
-                KinematicsNode._merge_config(target[key], value)
-            else:
-                target[key] = value
-
     def _load_model(self) -> None:
-        dh_params = self._value("dh_params")
-        if not dh_params:
-            raise ValueError("dh_params must be provided in the config file")
-
-        tool_t = self._value("tool_offset.translation")
-        tool_r = self._value("tool_offset.rotation_deg")
-        self._model = RobotModel.from_config(dh_params, tool_t, tool_r)
+        package = str(self._value("model.description_package"))
+        relative_path = str(self._value("model.urdf_relative_path"))
+        urdf_path = Path(get_package_share_directory(package)) / relative_path
+        self._model = RobotModel.from_urdf_file(
+            urdf_path,
+            base_link=str(self._value("model.base_link")),
+            tip_link=str(self._value("model.tip_link")),
+        )
         self.get_logger().info(
-            f"Loaded DH model with {self._model.num_joints} joints"
+            f"Loaded URDF chain {self._model.base_link} -> {self._model.tip_link}: "
+            f"{', '.join(self._model.joint_names)}"
         )
-
-    def _load_limits(self) -> None:
-        limits = JointLimits(
-            angle_min_rad=np.deg2rad([
-                float(self._value("joints.joint_1.angle_min_deg")),
-                float(self._value("joints.joint_2.angle_min_deg")),
-                float(self._value("joints.joint_3.angle_min_deg")),
-                float(self._value("joints.joint_4.angle_min_deg")),
-            ]),
-            angle_max_rad=np.deg2rad([
-                float(self._value("joints.joint_1.angle_max_deg")),
-                float(self._value("joints.joint_2.angle_max_deg")),
-                float(self._value("joints.joint_3.angle_max_deg")),
-                float(self._value("joints.joint_4.angle_max_deg")),
-            ]),
-            max_velocity_rad_per_s=np.deg2rad([
-                float(self._value("joints.joint_1.max_velocity_deg_per_s")),
-                float(self._value("joints.joint_2.max_velocity_deg_per_s")),
-                float(self._value("joints.joint_3.max_velocity_deg_per_s")),
-                float(self._value("joints.joint_4.max_velocity_deg_per_s")),
-            ]),
-        )
-        self._limits = limits
 
     def _build_pipeline(self) -> None:
         self._fk = ForwardSolver(self._model)
         self._jac = JacobianSolver(self._model)
-
-        ik_cfg = IKConfig(
-            max_iterations=int(self._value("ik_solver.max_iterations")),
-            position_tolerance_m=float(self._value("ik_solver.position_tolerance_m")),
-            orientation_tolerance_rad=float(
-                self._value("ik_solver.orientation_tolerance_rad")
-            ),
-            initial_lambda=float(self._value("ik_solver.initial_lambda")),
-            lambda_increase_factor=float(
-                self._value("ik_solver.lambda_increase_factor")
-            ),
-            lambda_decrease_factor=float(
-                self._value("ik_solver.lambda_decrease_factor")
-            ),
-            lambda_min=float(self._value("ik_solver.lambda_min")),
-            lambda_max=float(self._value("ik_solver.lambda_max")),
-            multi_start_attempts=int(self._value("ik_solver.multi_start_attempts")),
-            multi_start_perturbation_rad=float(
-                self._value("ik_solver.multi_start_perturbation_rad")
-            ),
-        )
-        self._ik = InverseSolver(self._fk, self._jac, ik_cfg)
-        self._selector = SolutionSelector(
-            self._limits,
-            manipulability_threshold=float(
-                self._value("singularity.manipulability_threshold")
-            ),
-        )
-        self._validator = SolutionValidator(
+        self._ik = InverseSolver(
             self._fk,
-            self._limits,
-            max_position_error_m=float(self._value("validation.max_position_error_m")),
-            max_orientation_error_rad=float(
-                self._value("validation.max_orientation_error_rad")
+            self._jac,
+            IKConfig(
+                max_iterations=int(self._value("ik_solver.max_iterations")),
+                position_tolerance_m=float(
+                    self._value("ik_solver.position_tolerance_m")
+                ),
+                initial_lambda=float(self._value("ik_solver.initial_lambda")),
+                lambda_increase_factor=float(
+                    self._value("ik_solver.lambda_increase_factor")
+                ),
+                lambda_decrease_factor=float(
+                    self._value("ik_solver.lambda_decrease_factor")
+                ),
+                lambda_min=float(self._value("ik_solver.lambda_min")),
+                lambda_max=float(self._value("ik_solver.lambda_max")),
+                multi_start_attempts=int(
+                    self._value("ik_solver.multi_start_attempts")
+                ),
+                multi_start_perturbation_rad=float(
+                    self._value("ik_solver.multi_start_perturbation_rad")
+                ),
+                continuity_gain=float(self._value("ik_solver.continuity_gain")),
+                max_step_rad=float(self._value("ik_solver.max_step_rad")),
             ),
         )
         self._shaper = TargetShaper(
             ShaperConfig(
-                position_dead_zone_m=float(self._value("shaper.position_dead_zone_m")),
-                orientation_dead_zone_rad=float(
-                    self._value("shaper.orientation_dead_zone_rad")
+                position_dead_zone_m=float(
+                    self._value("shaper.position_dead_zone_m")
                 ),
-                max_position_step_m=float(self._value("shaper.max_position_step_m")),
-                max_orientation_step_rad=float(
-                    self._value("shaper.max_orientation_step_rad")
+                max_position_step_m=float(
+                    self._value("shaper.max_position_step_m")
                 ),
                 position_alpha=float(self._value("shaper.position_alpha")),
-                orientation_alpha=float(self._value("shaper.orientation_alpha")),
-            ),
-            dt_s=1.0 / float(self._value("processing_rate_hz")),
+            )
         )
-        self._guard = WorkspaceGuard(self._limits)
 
     def _setup_ros(self) -> None:
-        state_qos = QoSProfile(depth=5)
+        qos = QoSProfile(depth=5)
         self._target_sub = self.create_subscription(
             PoseStamped,
             str(self._value("topics.target")),
             self._target_callback,
-            state_qos,
+            qos,
         )
         self._joint_state_sub = self.create_subscription(
             JointState,
             str(self._value("topics.joint_state")),
             self._joint_state_callback,
-            state_qos,
+            qos,
         )
         self._command_pub = self.create_publisher(
-            JointTrajectory,
-            str(self._value("topics.joint_command")),
-            state_qos,
+            JointTrajectory, str(self._value("topics.joint_command")), qos
         )
         self._end_effector_pub = self.create_publisher(
-            PoseStamped,
-            str(self._value("topics.end_effector_pose")),
-            state_qos,
+            PoseStamped, str(self._value("topics.end_effector_pose")), qos
         )
         self._diag_pub = self.create_publisher(
-            DiagnosticArray,
-            str(self._value("topics.diagnostics")),
-            state_qos,
+            DiagnosticArray, str(self._value("topics.diagnostics")), qos
         )
-
-        processing_rate_hz = float(self._value("processing_rate_hz"))
-        self._timer = self.create_timer(
-            1.0 / processing_rate_hz, self._process_pipeline
+        self._visualization_pub = self.create_publisher(
+            MarkerArray, str(self._value("topics.visualization")), qos
         )
+        self._simulation_pub = None
+        if bool(self._value("simulation.publish_joint_states")):
+            self._simulation_pub = self.create_publisher(
+                JointState, str(self._value("topics.simulated_joint_state")), qos
+            )
+            self._last_joint_angles = np.zeros(self._model.num_joints)
+            self._publish_simulated_joint_state(self._last_joint_angles)
+            self._publish_end_effector_pose(self._last_joint_angles)
+        rate = float(self._value("processing_rate_hz"))
+        self._timer = self.create_timer(1.0 / rate, self._process_target)
 
-        # Cached target from subscription
-        self._latest_target: Optional[PoseStamped] = None
+    def _target_callback(self, message: PoseStamped) -> None:
+        self._latest_target = message
 
-        self.get_logger().info(
-            f"Kinematics node running at {processing_rate_hz} Hz, "
-            f"subscribing to {self._value('topics.target')}"
-        )
-
-    # ------------------------------------------------------------------
-    # Subscription callbacks
-    # ------------------------------------------------------------------
-
-    def _target_callback(self, msg: PoseStamped) -> None:
-        self._latest_target = msg
-
-    def _joint_state_callback(self, msg: JointState) -> None:
-        expected = [f"joint_{index}" for index in range(1, self._model.num_joints + 1)]
-        if msg.name:
-            positions_by_name = dict(zip(msg.name, msg.position))
-            if not all(name in positions_by_name for name in expected):
-                self.get_logger().warning("Ignoring joint state with missing arm joints")
+    def _joint_state_callback(self, message: JointState) -> None:
+        by_name = dict(zip(message.name, message.position))
+        if message.name:
+            if not all(name in by_name for name in self._model.joint_names):
                 return
-            positions = [positions_by_name[name] for name in expected]
-        elif len(msg.position) >= self._model.num_joints:
-            positions = msg.position[: self._model.num_joints]
+            values = [by_name[name] for name in self._model.joint_names]
+        elif len(message.position) >= self._model.num_joints:
+            values = message.position[: self._model.num_joints]
         else:
             return
-
-        angles = np.asarray(positions, dtype=np.float64)
+        angles = np.asarray(values, dtype=np.float64)
         if not np.all(np.isfinite(angles)):
-            self.get_logger().warning("Ignoring non-finite joint state")
             return
-
         self._last_joint_angles = angles
-        self._publish_end_effector_pose(angles, msg.header.stamp)
+        self._publish_end_effector_pose(angles, message.header.stamp)
 
-    # ------------------------------------------------------------------
-    # Pipeline
-    # ------------------------------------------------------------------
-
-    def _process_pipeline(self) -> None:
-        target = self._latest_target
-        if target is None:
-            self._publish_diagnostics(
-                "no_target", DiagnosticStatus.WARN, {"reason": "No target received yet"}
-            )
+    def _process_target(self) -> None:
+        if self._simulation_pub is not None and self._last_joint_angles is not None:
+            self._publish_simulated_joint_state(self._last_joint_angles)
+        if self._latest_target is None:
             return
-
-        stamp = target.header.stamp
-        target_pos = np.array([
-            target.pose.position.x,
-            target.pose.position.y,
-            target.pose.position.z,
-        ], dtype=np.float64)
-        # Extract yaw from the quaternion
-        qx, qy, qz, qw = (
-            target.pose.orientation.x,
-            target.pose.orientation.y,
-            target.pose.orientation.z,
-            target.pose.orientation.w,
+        raw = np.array(
+            [
+                self._latest_target.pose.position.x,
+                self._latest_target.pose.position.y,
+                self._latest_target.pose.position.z,
+            ],
+            dtype=np.float64,
         )
-        target_yaw = float(math.atan2(
-            2.0 * (qw * qz + qx * qy),
-            1.0 - 2.0 * (qy * qy + qz * qz),
-        ))
-
-        # Step 1: Workspace guard (basic validity check)
-        guard = self._guard.check_target(target_pos, target_yaw)
-        if not guard.allowed:
-            self._publish_diagnostics(
-                guard.reason.value,
-                DiagnosticStatus.WARN,
-                {"reason": guard.reason.value},
-            )
+        if not np.all(np.isfinite(raw)):
+            self._publish_diagnostics("invalid_target", DiagnosticStatus.WARN, {})
             return
-
-        # Step 2: If no current joints, use zero / mid-range as initial guess
         if self._last_joint_angles is None:
-            self._last_joint_angles = np.zeros(self._model.num_joints, dtype=np.float64)
-            self.get_logger().info("No joint state received yet, using zero guess")
-
-        initial_guess = self._last_joint_angles.copy()
-
-        # Step 3: IK solve (multi-start, damped least squares)
-        manipulability_threshold = float(
-            self._value("singularity.manipulability_threshold")
-        )
-        ik_result = self._ik.solve(
-            target_pos, target_yaw, initial_guess, manipulability_threshold
-        )
-
-        if not ik_result.success:
-            # Multi-start failed; try once more from zero config
-            self.get_logger().debug(
-                "Multi-start IK failed, retrying from zero configuration"
-            )
-            ik_result = self._ik.solve(
-                target_pos, target_yaw,
-                np.zeros(self._model.num_joints, dtype=np.float64),
-                manipulability_threshold,
-            )
-
-        if not ik_result.success:
+            self._last_joint_angles = np.zeros(self._model.num_joints)
+        if not self._shaper.initialized:
+            self._shaper.shape(self._fk.solve(self._last_joint_angles).position)
+        target = self._shaper.shape(raw)
+        result = self._ik.solve(target, self._last_joint_angles)
+        if not result.success:
+            actual = self._fk.solve(self._last_joint_angles).position
+            self._publish_visualization(target, actual)
             self._publish_diagnostics(
                 "ik_failed",
                 DiagnosticStatus.WARN,
-                {
-                    "reason": "Inverse kinematics did not converge",
-                    "iterations": str(self._ik.config.max_iterations),
-                },
+                {"position_error_m": f"{result.position_error_m:.6f}"},
             )
             return
-
-        # Step 4: Solution selection (single result from single-start per call;
-        #         multi-start is handled inside InverseSolver.solve)
-        candidates = [ik_result]
-        best = self._selector.select(candidates, self._last_joint_angles)
-        if best is None:
-            self._publish_diagnostics(
-                "no_valid_solution",
-                DiagnosticStatus.WARN,
-                {"reason": "No solution passes joint limits or singularity check"},
-            )
-            return
-
-        # Step 5: Validation (FK back-substitution)
-        validation = self._validator.validate(best, target_pos, target_yaw)
-        if not validation.valid:
+        validation_error = float(
+            np.linalg.norm(self._fk.solve(result.joint_angles_rad).position - target)
+        )
+        if validation_error > float(self._value("validation.max_position_error_m")):
             self._publish_diagnostics(
                 "validation_failed",
                 DiagnosticStatus.WARN,
-                {
-                    "position_error_m": f"{validation.position_error_m:.6f}",
-                    "orientation_error_rad": f"{validation.orientation_error_rad:.6f}",
-                    "within_limits": str(validation.within_joint_limits),
-                },
+                {"position_error_m": f"{validation_error:.6f}"},
             )
             return
 
-        # Step 6: Guard check on joint angles
-        joint_guard = self._guard.check_joint_angles(best.joint_angles_rad)
-        if not joint_guard.allowed:
-            self._publish_diagnostics(
-                joint_guard.reason.value,
-                DiagnosticStatus.WARN,
-                {"reason": joint_guard.reason.value},
-            )
-            return
-
-        # Step 7: Target shaping
-        if ik_result.forward_result is not None:
-            fk_pos = ik_result.forward_result.position
-            fk_yaw = ik_result.forward_result.yaw_rad
-        else:
-            fk = self._fk.solve(best.joint_angles_rad)
-            fk_pos = fk.position
-            fk_yaw = fk.yaw_rad
-
-        shaped = self._shaper.shape(best.joint_angles_rad, fk_pos, fk_yaw)
-
-        # Step 8: Guard check on velocities
-        vel_guard = self._guard.check_joint_velocities(
-            shaped.joint_velocities_rad_per_s
+        previous = self._last_joint_angles.copy()
+        self._last_joint_angles = result.joint_angles_rad.copy()
+        self._publish_joint_command(
+            self._last_joint_angles,
+            (self._last_joint_angles - previous)
+            * float(self._value("processing_rate_hz")),
+            self._latest_target.header.stamp,
         )
-        if not vel_guard.allowed:
-            self._publish_diagnostics(
-                vel_guard.reason.value,
-                DiagnosticStatus.WARN,
-                {"reason": vel_guard.reason.value},
-            )
-            return
-
-        # Step 9: Publish joint command
-        self._publish_joint_command(shaped, stamp)
-
-        # Update state
-        self._last_joint_angles = shaped.joint_angles_rad.copy()
-
-        # Diagnostics
+        if self._simulation_pub is not None:
+            self._publish_simulated_joint_state(self._last_joint_angles)
+        self._publish_end_effector_pose(self._last_joint_angles)
+        actual = self._fk.solve(self._last_joint_angles).position
+        self._publish_visualization(target, actual)
         self._publish_diagnostics(
             "valid",
             DiagnosticStatus.OK,
             {
-                "position_error_m": f"{validation.position_error_m:.6f}",
-                "orientation_error_rad": f"{validation.orientation_error_rad:.6f}",
-                "joint_distance_rad": f"{best.joint_distance_rad:.6f}",
-                "ik_iterations": str(ik_result.iterations),
-                "near_singular": str(ik_result.near_singular),
+                "position_error_m": f"{validation_error:.6f}",
+                "iterations": str(result.iterations),
+                "near_position_singularity": str(result.near_singular),
             },
         )
 
-    # ------------------------------------------------------------------
-    # Publishers
-    # ------------------------------------------------------------------
-
-    def _publish_end_effector_pose(self, angles: np.ndarray, stamp) -> None:
-        """Publish the FK pose corresponding to measured joint feedback."""
-        fk = self._fk.solve(angles)
-        msg = PoseStamped()
-        msg.header.stamp = stamp
-        msg.header.frame_id = str(self._value("frame_id.base"))
-        msg.pose.position.x = float(fk.position[0])
-        msg.pose.position.y = float(fk.position[1])
-        msg.pose.position.z = float(fk.position[2])
-        msg.pose.orientation.x = float(fk.quaternion_xyzw[0])
-        msg.pose.orientation.y = float(fk.quaternion_xyzw[1])
-        msg.pose.orientation.z = float(fk.quaternion_xyzw[2])
-        msg.pose.orientation.w = float(fk.quaternion_xyzw[3])
-        self._end_effector_pub.publish(msg)
-
     def _publish_joint_command(
-        self, shaped: object, stamp
+        self, angles: np.ndarray, velocities: np.ndarray, stamp: Any
     ) -> None:
-        """Publish a JointTrajectory with one point containing 4 joint angles + velocities."""
-        from .target_shaper import ShapedTarget
-        shaped_target: ShapedTarget = shaped
-
-        msg = JointTrajectory()
-        msg.header.stamp = stamp
-        msg.header.frame_id = str(self._value("frame_id.base"))
-        msg.joint_names = ["joint_1", "joint_2", "joint_3", "joint_4"]
-
+        message = JointTrajectory()
+        message.header.stamp = stamp
+        message.header.frame_id = str(self._value("frame_id.base"))
+        message.joint_names = self._model.joint_names
         point = JointTrajectoryPoint()
-        point.positions = shaped_target.joint_angles_rad.tolist()
-        point.velocities = shaped_target.joint_velocities_rad_per_s.tolist()
-        # Convert the duration from processing rate
-        point.time_from_start.sec = 0
+        point.positions = angles.tolist()
+        point.velocities = velocities.tolist()
         point.time_from_start.nanosec = int(
-            (1.0 / float(self._value("processing_rate_hz"))) * 1e9
+            1.0e9 / float(self._value("processing_rate_hz"))
+        )
+        message.points = [point]
+        self._command_pub.publish(message)
+
+    def _publish_simulated_joint_state(self, angles: np.ndarray) -> None:
+        if self._simulation_pub is None:
+            return
+        message = JointState()
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.name = self._model.joint_names
+        message.position = angles.tolist()
+        self._simulation_pub.publish(message)
+
+    def _publish_end_effector_pose(self, angles: np.ndarray, stamp: Any = None) -> None:
+        result = self._fk.solve(angles)
+        message = PoseStamped()
+        message.header.stamp = stamp or self.get_clock().now().to_msg()
+        message.header.frame_id = str(self._value("frame_id.base"))
+        message.pose.position.x = float(result.position[0])
+        message.pose.position.y = float(result.position[1])
+        message.pose.position.z = float(result.position[2])
+        message.pose.orientation.x = float(result.quaternion_xyzw[0])
+        message.pose.orientation.y = float(result.quaternion_xyzw[1])
+        message.pose.orientation.z = float(result.quaternion_xyzw[2])
+        message.pose.orientation.w = float(result.quaternion_xyzw[3])
+        self._end_effector_pub.publish(message)
+
+    def _publish_visualization(
+        self, target: np.ndarray, actual: np.ndarray
+    ) -> None:
+        """Show target, achieved tip position, and Cartesian error in RViz."""
+        stamp = self.get_clock().now().to_msg()
+        frame = str(self._value("frame_id.base"))
+
+        target_marker = Marker()
+        target_marker.header.stamp = stamp
+        target_marker.header.frame_id = frame
+        target_marker.ns = "kinematics_target"
+        target_marker.id = 0
+        target_marker.type = Marker.SPHERE
+        target_marker.action = Marker.ADD
+        target_marker.pose.position = Point(
+            x=float(target[0]), y=float(target[1]), z=float(target[2])
+        )
+        target_marker.pose.orientation.w = 1.0
+        target_marker.scale.x = 0.025
+        target_marker.scale.y = 0.025
+        target_marker.scale.z = 0.025
+        target_marker.color.r = 1.0
+        target_marker.color.g = 0.15
+        target_marker.color.b = 0.05
+        target_marker.color.a = 0.95
+
+        actual_marker = Marker()
+        actual_marker.header.stamp = stamp
+        actual_marker.header.frame_id = frame
+        actual_marker.ns = "kinematics_tip"
+        actual_marker.id = 1
+        actual_marker.type = Marker.SPHERE
+        actual_marker.action = Marker.ADD
+        actual_marker.pose.position = Point(
+            x=float(actual[0]), y=float(actual[1]), z=float(actual[2])
+        )
+        actual_marker.pose.orientation.w = 1.0
+        actual_marker.scale.x = 0.018
+        actual_marker.scale.y = 0.018
+        actual_marker.scale.z = 0.018
+        actual_marker.color.r = 0.05
+        actual_marker.color.g = 1.0
+        actual_marker.color.b = 0.15
+        actual_marker.color.a = 0.95
+
+        error_marker = Marker()
+        error_marker.header.stamp = stamp
+        error_marker.header.frame_id = frame
+        error_marker.ns = "kinematics_error"
+        error_marker.id = 2
+        error_marker.type = Marker.LINE_LIST
+        error_marker.action = Marker.ADD
+        error_marker.scale.x = 0.004
+        error_marker.color.r = 1.0
+        error_marker.color.g = 0.85
+        error_marker.color.b = 0.05
+        error_marker.color.a = 0.95
+        error_marker.points = [target_marker.pose.position, actual_marker.pose.position]
+
+        text_marker = Marker()
+        text_marker.header.stamp = stamp
+        text_marker.header.frame_id = frame
+        text_marker.ns = "kinematics_error_text"
+        text_marker.id = 3
+        text_marker.type = Marker.TEXT_VIEW_FACING
+        text_marker.action = Marker.ADD
+        midpoint = 0.5 * (target + actual)
+        text_marker.pose.position = Point(
+            x=float(midpoint[0]),
+            y=float(midpoint[1]),
+            z=float(midpoint[2] + 0.025),
+        )
+        text_marker.pose.orientation.w = 1.0
+        text_marker.scale.z = 0.018
+        text_marker.color.r = 1.0
+        text_marker.color.g = 1.0
+        text_marker.color.b = 1.0
+        text_marker.color.a = 0.95
+        error_mm = 1000.0 * float(np.linalg.norm(target - actual))
+        text_marker.text = f"tip error: {error_mm:.2f} mm"
+
+        self._visualization_pub.publish(
+            MarkerArray(
+                markers=[target_marker, actual_marker, error_marker, text_marker]
+            )
         )
 
-        msg.points = [point]
-        self._command_pub.publish(msg)
-
     def _publish_diagnostics(
-        self,
-        reason: str,
-        level: int,
-        metrics: dict[str, str],
+        self, reason: str, level: int, metrics: Dict[str, str]
     ) -> None:
         array = DiagnosticArray()
         array.header.stamp = self.get_clock().now().to_msg()
-
         status = DiagnosticStatus()
         status.name = "humanoid_arm_kinematics/pipeline"
-        status.hardware_id = "kinematics"
-        status.message = reason
+        status.hardware_id = "urdf_position_kinematics"
         status.level = level
-
-        values = [("reason", reason)]
-        values.extend(metrics.items())
-        status.values = [self._kv(k, v) for k, v in values]
-
+        status.message = reason
+        values = [("reason", reason)] + list(metrics.items())
+        status.values = [KeyValue(key=key, value=value) for key, value in values]
         array.status = [status]
         self._diag_pub.publish(array)
 
-    @staticmethod
-    def _kv(key: str, value: str) -> KeyValue:
-        item = KeyValue()
-        item.key = key
-        item.value = value
-        return item
-
     def reset(self) -> None:
-        """Reset internal state (shaper, last joints)."""
         self._shaper.reset()
+        self._latest_target = None
         self._last_joint_angles = None
-        self.get_logger().info("Kinematics node state reset")
 
 
-def main(args: Iterable[str] | None = None) -> None:
+def main(args: Optional[Iterable[str]] = None) -> None:
     rclpy.init(args=args)
     node: Optional[KinematicsNode] = None
     try:
         node = KinematicsNode()
         rclpy.spin(node)
     except (ModelError, ValueError) as exc:
-        rclpy.logging.get_logger("kinematics_node").fatal(
-            f"invalid kinematics configuration: {exc}"
-        )
+        rclpy.logging.get_logger("kinematics_node").fatal(str(exc))
         raise
     finally:
         if node is not None:

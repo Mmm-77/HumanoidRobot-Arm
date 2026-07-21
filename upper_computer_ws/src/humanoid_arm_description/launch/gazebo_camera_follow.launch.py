@@ -60,9 +60,6 @@ def generate_launch_description() -> LaunchDescription:
                     "config_file": str(
                         Path(kinematics_share) / "config" / "kinematics.yaml"
                     ),
-                    "limits_config_file": str(
-                        Path(kinematics_share) / "config" / "joint_limits.yaml"
-                    ),
                 }],
             ),
             Node(

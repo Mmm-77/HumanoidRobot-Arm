@@ -70,7 +70,7 @@ humanoid_arm_description/
 - 关节上下限
 - Gazebo 关节驱动插件
 
-URDF 的关节位置和旋转轴必须与 `humanoid_arm_kinematics/config/kinematics.yaml` 中的 Modified DH 模型一致，关节限位应与 `joint_limits.yaml` 一致。
+URDF 是运动学几何的唯一数据源。`humanoid_arm_kinematics` 直接解析关节位置、旋转轴以及到 `tip_frame` 的固定变换，不再维护独立 DH 表。当前 RViz 几何验证阶段不应用真实关节限位。
 
 ### 4.2 Gazebo 关节驱动插件
 
