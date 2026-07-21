@@ -7,11 +7,13 @@ import xml.etree.ElementTree as ET
 
 URDF_PATH = Path(__file__).parents[1] / "urdf" / "humanoid_arm.urdf"
 EXPECTED = {
-    "joint_1": ((0.0, 0.0, 0.0), (0.0, 0.5, 0.8660254)),
+    "joint_1": ((0.0, 0.0, 0.0), (0.0, -0.8660254, 0.5)),
     "joint_2": ((0.0, -0.05, 0.0), (1.0, 0.0, 0.0)),
     "joint_3": ((0.0, -0.05, -0.07), (0.0, 0.0, 1.0)),
     "joint_4": ((0.0, -0.05, -0.105), (0.0, 1.0, 0.0)),
 }
+
+J1_AXIS = EXPECTED["joint_1"][1]
 
 
 def _matrix_multiply(left, right):
@@ -70,6 +72,35 @@ def test_absolute_joint_geometry_at_zero():
         parent_rotation = joint_rotation
 
 
+def test_base_top_face_touches_j1_and_is_coaxial():
+    root = ET.parse(URDF_PATH).getroot()
+    base = next(link for link in root.findall("link") if link.attrib["name"] == "base_link")
+    visual = base.find("visual")
+    origin = visual.find("origin")
+    cylinder = visual.find("geometry/cylinder")
+
+    centre = tuple(float(value) for value in origin.attrib["xyz"].split())
+    rotation = _rpy_matrix(*tuple(float(value) for value in origin.attrib["rpy"].split()))
+    cylinder_axis = _normalise(_rotate(rotation, (0.0, 0.0, 1.0)))
+    half_length = float(cylinder.attrib["length"]) / 2.0
+    top_centre = tuple(centre[i] + half_length * cylinder_axis[i] for i in range(3))
+
+    expected_axis = _normalise(J1_AXIS)
+    assert all(abs(cylinder_axis[i] - expected_axis[i]) < 1.0e-8 for i in range(3))
+    assert all(abs(value) < 1.0e-8 for value in top_centre)
+
+    link_1 = next(link for link in root.findall("link") if link.attrib["name"] == "link_1")
+    joint_visual = link_1.findall("visual")[1]
+    joint_origin = joint_visual.find("origin")
+    joint_centre = tuple(float(value) for value in joint_origin.attrib["xyz"].split())
+    joint_length = float(joint_visual.find("geometry/cylinder").attrib["length"])
+    joint_bottom = tuple(
+        joint_centre[i] - (joint_length / 2.0) * expected_axis[i] for i in range(3)
+    )
+    assert all(abs(value) < 1.0e-8 for value in joint_bottom)
+
+
 if __name__ == "__main__":
     test_absolute_joint_geometry_at_zero()
+    test_base_top_face_touches_j1_and_is_coaxial()
     print("zero-pose absolute joint geometry: OK")

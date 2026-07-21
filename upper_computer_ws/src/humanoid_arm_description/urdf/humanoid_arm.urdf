@@ -8,20 +8,21 @@
   <link name="world"/>
 
   <link name="base_link">
-    <inertial><origin xyz="0 0 -0.015"/><mass value="1.0"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
-    <visual><origin xyz="0 0 -0.015"/><geometry><cylinder radius="0.04" length="0.03"/></geometry><material name="base_blue"/></visual>
-    <collision><origin xyz="0 0 -0.015"/><geometry><cylinder radius="0.04" length="0.03"/></geometry></collision>
+    <!-- The cylinder's top-face centre is J1; its axis is collinear with J1. -->
+    <inertial><origin xyz="0 0.012990381 -0.0075" rpy="1.047197551 0 0"/><mass value="1.0"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
+    <visual><origin xyz="0 0.012990381 -0.0075" rpy="1.047197551 0 0"/><geometry><cylinder radius="0.04" length="0.03"/></geometry><material name="base_blue"/></visual>
+    <collision><origin xyz="0 0.012990381 -0.0075" rpy="1.047197551 0 0"/><geometry><cylinder radius="0.04" length="0.03"/></geometry></collision>
   </link>
 
   <joint name="world_joint" type="fixed">
     <parent link="world"/><child link="base_link"/>
-    <origin xyz="0 0 0" rpy="1.047197551 0 0"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
 
   <link name="link_1">
     <inertial><origin xyz="0 -0.025 0"/><mass value="0.20"/><inertia ixx="0.000043" ixy="0" ixz="0" iyy="0.0000036" iyz="0" izz="0.000043"/></inertial>
     <visual><origin xyz="0 -0.025 0" rpy="1.57079632679 0 0"/><geometry><cylinder radius="0.006" length="0.05"/></geometry><material name="link_silver"/></visual>
-    <visual><geometry><cylinder radius="0.008" length="0.02"/></geometry><material name="joint_red"/></visual>
+    <visual><origin xyz="0 -0.008660254 0.005" rpy="1.047197551 0 0"/><geometry><cylinder radius="0.008" length="0.02"/></geometry><material name="joint_red"/></visual>
     <collision><origin xyz="0 -0.025 0" rpy="1.57079632679 0 0"/><geometry><cylinder radius="0.006" length="0.05"/></geometry></collision>
   </link>
   <link name="link_2">
@@ -61,12 +62,12 @@
   -->
   <joint name="joint_1" type="revolute">
     <parent link="base_link"/><child link="link_1"/>
-    <origin xyz="0 0 0" rpy="0 0 0"/><axis xyz="0 0 1"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/><axis xyz="0 -0.8660254 0.5"/>
     <limit lower="-3.141592654" upper="3.141592654" effort="10" velocity="3.141592654"/>
   </joint>
   <joint name="joint_2" type="revolute">
     <parent link="link_1"/><child link="link_2"/>
-    <origin xyz="0 -0.05 0" rpy="-1.047197551 0 0"/><axis xyz="1 0 0"/>
+    <origin xyz="0 -0.05 0" rpy="0 0 0"/><axis xyz="1 0 0"/>
     <limit lower="-3.141592654" upper="3.141592654" effort="10" velocity="3.141592654"/>
   </joint>
   <joint name="joint_3" type="revolute">
