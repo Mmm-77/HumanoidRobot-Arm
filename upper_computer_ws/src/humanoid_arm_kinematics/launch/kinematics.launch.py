@@ -12,13 +12,13 @@ def generate_launch_description() -> LaunchDescription:
 
     config_arg = DeclareLaunchArgument(
         "config",
-        default_value="config/kinematics.yaml",
+        default_value=f"{pkg_share}/config/kinematics.yaml",
         description="Path to the kinematics configuration YAML file.",
     )
 
     limits_arg = DeclareLaunchArgument(
         "limits_config",
-        default_value="config/joint_limits.yaml",
+        default_value=f"{pkg_share}/config/joint_limits.yaml",
         description="Path to the joint limits configuration YAML file.",
     )
 
@@ -27,10 +27,10 @@ def generate_launch_description() -> LaunchDescription:
         executable="kinematics_node",
         name="kinematics_node",
         output="screen",
-        parameters=[
-            LaunchConfiguration("config"),
-            LaunchConfiguration("limits_config"),
-        ],
+        parameters=[{
+            "config_file": LaunchConfiguration("config"),
+            "limits_config_file": LaunchConfiguration("limits_config"),
+        }],
     )
 
     return LaunchDescription([config_arg, limits_arg, kinematics_node])

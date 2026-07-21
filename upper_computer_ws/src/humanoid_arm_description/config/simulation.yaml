@@ -1,0 +1,5 @@
+# The plugin reads its authoritative limits from the URDF/SDF block.  This file
+# documents the display-mode defaults in one place for launch-time operators.
+gazebo_joint_driver:
+  direct_mode: false
+  publish_rate_hz: 60.0

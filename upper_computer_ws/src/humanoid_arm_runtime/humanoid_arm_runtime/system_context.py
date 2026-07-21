@@ -75,6 +75,9 @@ class SystemContext:
     # Latest communication feedback
     latest_joints: Optional[JointSnapshot] = None
 
+    # Latest measured end-effector pose, calculated by kinematics FK
+    latest_end_effector_pose: Optional[PoseSnapshot] = None
+
     # Latest IK output (for FK back-calculation)
     latest_ik_joints_rad: Optional[NDArray[np.float64]] = None
 
@@ -105,6 +108,14 @@ class SystemContext:
     def get_joints(self) -> Optional[JointSnapshot]:
         with self._lock:
             return self.latest_joints
+
+    def set_end_effector_pose(self, pose: PoseSnapshot) -> None:
+        with self._lock:
+            self.latest_end_effector_pose = pose
+
+    def get_end_effector_pose(self) -> Optional[PoseSnapshot]:
+        with self._lock:
+            return self.latest_end_effector_pose
 
     def set_baseline(self, pose: PoseSnapshot, ee_pos: NDArray[np.float64], ee_yaw: float) -> None:
         with self._lock:

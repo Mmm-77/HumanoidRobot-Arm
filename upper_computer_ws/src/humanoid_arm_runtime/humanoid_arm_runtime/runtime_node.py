@@ -106,6 +106,10 @@ class RuntimeNode(Node):
                 int(self._p("follow.axis_sign_z")),
             ),
             position_scale=float(self._p("follow.position_scale")),
+            tag_to_base=self._tag_to_base_transform(),
+            camera_pose_convention=str(self._p("follow.camera_pose_convention")),
+            yaw_sign=int(self._p("follow.yaw_sign")),
+            yaw_scale=float(self._p("follow.yaw_scale")),
         )
         self._projector = TaskProjector(
             max_position_step_m=float(self._p("projector.max_position_step_m")),
@@ -132,6 +136,12 @@ class RuntimeNode(Node):
             JointState,
             str(self._p("topics.joint_state")),
             self._joint_callback,
+            sensor_qos,
+        )
+        self._end_effector_sub = self.create_subscription(
+            PoseStamped,
+            str(self._p("topics.end_effector_pose")),
+            self._end_effector_callback,
             sensor_qos,
         )
         self._link_sub = self.create_subscription(
@@ -176,8 +186,6 @@ class RuntimeNode(Node):
         # --- Internal state ---
         self._frame_id = str(self._p("frame_id"))
         self._clock = time.monotonic
-        self._last_ik_joints: Optional[np.ndarray] = None
-
         self.get_logger().info(f"Runtime node started at {rate_hz} Hz")
 
     # ------------------------------------------------------------------
@@ -203,12 +211,19 @@ class RuntimeNode(Node):
             # Baseline
             "baseline.max_pose_age_s": 0.2,
             "baseline.max_joint_age_s": 0.2,
+            "baseline.max_end_effector_age_s": 0.2,
 
             # Follow mapper
             "follow.axis_sign_x": 1,
             "follow.axis_sign_y": 1,
             "follow.axis_sign_z": 1,
             "follow.position_scale": 1.0,
+            "follow.camera_pose_convention": "camera_in_tag",
+            "follow.tag_to_base_rotation": [1.0, 0.0, 0.0,
+                                             0.0, 1.0, 0.0,
+                                             0.0, 0.0, 1.0],
+            "follow.yaw_sign": 1,
+            "follow.yaw_scale": 1.0,
 
             # Task projector
             "projector.max_position_step_m": 0.05,
@@ -217,6 +232,7 @@ class RuntimeNode(Node):
             # Topics
             "topics.camera_pose": "vision/camera_pose",
             "topics.joint_state": "kinematics/joint_state",
+            "topics.end_effector_pose": "kinematics/end_effector_pose",
             "topics.link_state": "communication/link_state",
             "topics.kinematics_target": "kinematics/target",
             "topics.ctrl_mode": "communication/ctrl_mode",
@@ -228,6 +244,19 @@ class RuntimeNode(Node):
 
     def _p(self, name: str) -> object:
         return self.get_parameter(name).value
+
+    def _tag_to_base_transform(self) -> np.ndarray:
+        values = np.asarray(
+            self._p("follow.tag_to_base_rotation"), dtype=np.float64
+        )
+        if values.size != 9 or not np.all(np.isfinite(values)):
+            raise ValueError("follow.tag_to_base_rotation must contain 9 finite values")
+        rotation = values.reshape(3, 3)
+        if not np.allclose(rotation @ rotation.T, np.eye(3), atol=1e-5):
+            raise ValueError("follow.tag_to_base_rotation must be orthonormal")
+        transform = np.eye(4, dtype=np.float64)
+        transform[:3, :3] = rotation
+        return transform
 
     # ------------------------------------------------------------------
     # Subscription callbacks
@@ -270,6 +299,28 @@ class RuntimeNode(Node):
         )
         self._context.set_joints(joints)
 
+    def _end_effector_callback(self, msg: PoseStamped) -> None:
+        """Cache the latest measured FK end-effector pose in the base frame."""
+        values = np.array([
+            msg.pose.position.x, msg.pose.position.y, msg.pose.position.z,
+            msg.pose.orientation.x, msg.pose.orientation.y,
+            msg.pose.orientation.z, msg.pose.orientation.w,
+        ], dtype=np.float64)
+        if not np.all(np.isfinite(values)):
+            self.get_logger().warning("Ignoring non-finite end-effector pose")
+            return
+        quaternion = values[3:]
+        norm = float(np.linalg.norm(quaternion))
+        if norm < 1e-12:
+            self.get_logger().warning("Ignoring end-effector pose with zero quaternion")
+            return
+        self._context.set_end_effector_pose(PoseSnapshot(
+            timestamp_s=self._clock(),
+            position=values[:3],
+            quaternion_xyzw=quaternion / norm,
+            valid=True,
+        ))
+
     def _link_callback(self, msg: Bool) -> None:
         self._context.link_ok = msg.data
 
@@ -279,17 +330,14 @@ class RuntimeNode(Node):
 
     def _start_cb(self, request, response):
         try:
+            if not self._capture_baseline():
+                response.success = False
+                response.message = "Cannot start FOLLOW: camera or FK baseline is not fresh"
+                return response
             change = self._fsm.transition(Transition.START, self._clock())
             self.get_logger().info(f"State: {change.previous.value} → {change.current.value}")
-
-            if self._fsm.state == SystemState.FOLLOW:
-                # Try to capture baseline immediately
-                captured = self._capture_baseline()
-                response.success = captured
-                response.message = "FOLLOW started" if captured else "FOLLOW started (baseline pending)"
-            else:
-                response.success = True
-                response.message = f"State: {self._fsm.state.value}"
+            response.success = True
+            response.message = "FOLLOW started"
         except Exception as exc:
             response.success = False
             response.message = str(exc)
@@ -307,12 +355,13 @@ class RuntimeNode(Node):
 
     def _unhold_cb(self, request, response):
         try:
+            if not self._capture_baseline():
+                response.success = False
+                response.message = "Cannot resume FOLLOW: camera or FK baseline is not fresh"
+                return response
             change = self._fsm.transition(Transition.UNHOLD, self._clock())
             response.success = True
             response.message = f"UNHOLD → {change.current.value}"
-            # Re-capture baseline
-            if self._fsm.state == SystemState.FOLLOW:
-                self._capture_baseline()
         except Exception as exc:
             response.success = False
             response.message = str(exc)
@@ -339,7 +388,11 @@ class RuntimeNode(Node):
 
         # If all subsystems are online → READY
         if self._fsm.state == SystemState.INIT:
-            if self._context.latest_pose is not None and self._context.latest_joints is not None:
+            if (
+                self._context.latest_pose is not None
+                and self._context.latest_joints is not None
+                and self._context.latest_end_effector_pose is not None
+            ):
                 try:
                     self._fsm.transition(Transition.SYSTEMS_READY, now)
                     self.get_logger().info("All systems ready → READY")
@@ -404,10 +457,6 @@ class RuntimeNode(Node):
             pose.quaternion_xyzw,
         )
 
-        # Add delta to baseline end-effector position
-        target_pos = baseline_ee_pos + delta_pos_base
-        target_yaw = baseline_ee_yaw + delta_yaw_base
-
         # Project (clip)
         clipped_pos, clipped_yaw = self._projector.project(
             delta_pos_base, delta_yaw_base,
@@ -418,14 +467,16 @@ class RuntimeNode(Node):
         self._publish_pose_target(now, final_pos, final_yaw)
 
     def _publish_safe_target(self, now: float) -> None:
-        """Publish a zero-velocity hold target (last known)."""
-        # Use last known IK result as hold target
-        pose = self._context.get_pose()
-        if pose is None:
+        """Hold the latest FK pose instead of mapping a camera pose into base."""
+        end_effector = self._context.get_end_effector_pose()
+        if end_effector is None:
             return
-
-        # Publish current position as target (freeze)
-        self._publish_pose_target(now, pose.position, 0.0)
+        x, y, z, w = end_effector.quaternion_xyzw
+        yaw = math.atan2(
+            2.0 * (w * z + x * y),
+            1.0 - 2.0 * (y * y + z * z),
+        )
+        self._publish_pose_target(now, end_effector.position, yaw)
 
     def _publish_pose_target(
         self,
@@ -452,38 +503,19 @@ class RuntimeNode(Node):
 
     def _capture_baseline(self) -> bool:
         """Attempt to capture the FOLLOW baseline from current FK result."""
-        joints = self._context.get_joints()
-        if joints is None:
+        end_effector = self._context.get_end_effector_pose()
+        if end_effector is None:
             return False
-
-        # Approximate FK: we need the end-effector position and yaw.
-        # This requires calling the forward kinematics. Since we don't
-        # have a direct FK API here, we use the last published IK result
-        # as the current end-effector pose. In production this should
-        # call the FK solver directly.
-        if self._last_ik_joints is None:
-            # No previous FK result; can't baseline
+        if (self._clock() - end_effector.timestamp_s) > float(
+            self._p("baseline.max_end_effector_age_s")
+        ):
             return False
-
-        # The end-effector pose from FK is stored as the baseline target.
-        # For now we use a placeholder: the FK is computed by the kinematics
-        # package and published as joint_command—but we need FK, not IK.
-        #
-        # We'll capture based on the latest known joint positions and use
-        # a simple approximation: the last target position is the FK.
-        # TODO: replace with actual FK call when kinematics package exposes
-        #       FK as a ROS topic or library call.
-
-        # For now, use the last known IK result as baseline EE position.
-        # This assumes the arm is at the last commanded position.
-        ee_pos = self._last_ik_joints.copy()  # placeholder (needs FK)
-        ee_yaw = 0.0
-
-        pose = self._context.get_pose()
-        if pose is None:
-            return False
-
-        return self._baseline.capture(ee_pos, ee_yaw)
+        x, y, z, w = end_effector.quaternion_xyzw
+        ee_yaw = math.atan2(
+            2.0 * (w * z + x * y),
+            1.0 - 2.0 * (y * y + z * z),
+        )
+        return self._baseline.capture(end_effector.position, ee_yaw)
 
     # ------------------------------------------------------------------
     # Publishers

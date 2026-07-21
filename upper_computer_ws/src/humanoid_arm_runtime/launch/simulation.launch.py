@@ -1,45 +1,16 @@
-"""Launch node stack in simulation mode (no hardware).
+"""Backward-compatible entry point for the Gazebo camera-follow simulation."""
 
-Launches vision, kinematics, and runtime.  communication_node is also
-launched but will remain disconnected until a serial device is attached.
-"""
+from pathlib import Path
 
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch_ros.actions import Node
+from launch.actions import IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 
 def generate_launch_description():
+    description_share = get_package_share_directory("humanoid_arm_description")
+    launch_file = Path(description_share) / "launch" / "gazebo_camera_follow.launch.py"
     return LaunchDescription([
-        Node(
-            package="humanoid_arm_vision",
-            executable="vision_node",
-            name="vision_node",
-            output="screen",
-            parameters=[],
-            emulate_tty=True,
-        ),
-        Node(
-            package="humanoid_arm_kinematics",
-            executable="kinematics_node",
-            name="kinematics_node",
-            output="screen",
-            parameters=[],
-            emulate_tty=True,
-        ),
-        Node(
-            package="humanoid_arm_communication",
-            executable="communication_node",
-            name="communication_node",
-            output="screen",
-            parameters=[],
-            emulate_tty=True,
-        ),
-        Node(
-            package="humanoid_arm_runtime",
-            executable="runtime_node",
-            name="runtime_node",
-            output="screen",
-            parameters=[],
-            emulate_tty=True,
-        ),
+        IncludeLaunchDescription(PythonLaunchDescriptionSource(str(launch_file)))
     ])

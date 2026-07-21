@@ -55,6 +55,7 @@ class KinematicsNode(Node):
     def __init__(self) -> None:
         super().__init__("kinematics_node")
         self._declare_parameters()
+        self._load_config_files()
         self._load_model()
         self._load_limits()
         self._build_pipeline()
@@ -67,10 +68,13 @@ class KinematicsNode(Node):
 
     def _declare_parameters(self) -> None:
         defaults: dict[str, object] = {
+            "config_file": "",
+            "limits_config_file": "",
             "processing_rate_hz": 30.0,
             "topics.target": "kinematics/target",
             "topics.joint_command": "kinematics/joint_command",
             "topics.joint_state": "kinematics/joint_state",
+            "topics.end_effector_pose": "kinematics/end_effector_pose",
             "topics.diagnostics": "kinematics/diagnostics",
             "frame_id.base": "base",
             "dh_params": [],
@@ -118,7 +122,33 @@ class KinematicsNode(Node):
             self.declare_parameter(name, default)
 
     def _value(self, name: str) -> Any:
-        return self.get_parameter(name).value
+        value: Any = self._config
+        for part in name.split("."):
+            if not isinstance(value, dict) or part not in value:
+                return self.get_parameter(name).value
+            value = value[part]
+        return value
+
+    def _load_config_files(self) -> None:
+        """Load structured model configuration outside the ROS parameter type system."""
+        self._config: dict[str, Any] = {}
+        for parameter_name in ("config_file", "limits_config_file"):
+            path = str(self.get_parameter(parameter_name).value)
+            if not path:
+                continue
+            with open(path, "r", encoding="utf-8") as stream:
+                loaded = yaml.safe_load(stream) or {}
+            if not isinstance(loaded, dict):
+                raise ValueError(f"{path} must contain a YAML mapping")
+            self._merge_config(self._config, loaded)
+
+    @staticmethod
+    def _merge_config(target: dict[str, Any], source: dict[str, Any]) -> None:
+        for key, value in source.items():
+            if isinstance(value, dict) and isinstance(target.get(key), dict):
+                KinematicsNode._merge_config(target[key], value)
+            else:
+                target[key] = value
 
     def _load_model(self) -> None:
         dh_params = self._value("dh_params")
@@ -230,6 +260,11 @@ class KinematicsNode(Node):
             str(self._value("topics.joint_command")),
             state_qos,
         )
+        self._end_effector_pub = self.create_publisher(
+            PoseStamped,
+            str(self._value("topics.end_effector_pose")),
+            state_qos,
+        )
         self._diag_pub = self.create_publisher(
             DiagnosticArray,
             str(self._value("topics.diagnostics")),
@@ -257,10 +292,25 @@ class KinematicsNode(Node):
         self._latest_target = msg
 
     def _joint_state_callback(self, msg: JointState) -> None:
-        if len(msg.position) >= self._model.num_joints:
-            self._last_joint_angles = np.array(
-                msg.position[: self._model.num_joints], dtype=np.float64
-            )
+        expected = [f"joint_{index}" for index in range(1, self._model.num_joints + 1)]
+        if msg.name:
+            positions_by_name = dict(zip(msg.name, msg.position))
+            if not all(name in positions_by_name for name in expected):
+                self.get_logger().warning("Ignoring joint state with missing arm joints")
+                return
+            positions = [positions_by_name[name] for name in expected]
+        elif len(msg.position) >= self._model.num_joints:
+            positions = msg.position[: self._model.num_joints]
+        else:
+            return
+
+        angles = np.asarray(positions, dtype=np.float64)
+        if not np.all(np.isfinite(angles)):
+            self.get_logger().warning("Ignoring non-finite joint state")
+            return
+
+        self._last_joint_angles = angles
+        self._publish_end_effector_pose(angles, msg.header.stamp)
 
     # ------------------------------------------------------------------
     # Pipeline
@@ -420,6 +470,21 @@ class KinematicsNode(Node):
     # ------------------------------------------------------------------
     # Publishers
     # ------------------------------------------------------------------
+
+    def _publish_end_effector_pose(self, angles: np.ndarray, stamp) -> None:
+        """Publish the FK pose corresponding to measured joint feedback."""
+        fk = self._fk.solve(angles)
+        msg = PoseStamped()
+        msg.header.stamp = stamp
+        msg.header.frame_id = str(self._value("frame_id.base"))
+        msg.pose.position.x = float(fk.position[0])
+        msg.pose.position.y = float(fk.position[1])
+        msg.pose.position.z = float(fk.position[2])
+        msg.pose.orientation.x = float(fk.quaternion_xyzw[0])
+        msg.pose.orientation.y = float(fk.quaternion_xyzw[1])
+        msg.pose.orientation.z = float(fk.quaternion_xyzw[2])
+        msg.pose.orientation.w = float(fk.quaternion_xyzw[3])
+        self._end_effector_pub.publish(msg)
 
     def _publish_joint_command(
         self, shaped: object, stamp

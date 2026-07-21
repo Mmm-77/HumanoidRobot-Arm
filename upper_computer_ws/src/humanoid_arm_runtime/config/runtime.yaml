@@ -18,6 +18,7 @@ runtime_node:
     # --- Baseline ---
     baseline.max_pose_age_s: 0.2
     baseline.max_joint_age_s: 0.2
+    baseline.max_end_effector_age_s: 0.2
 
     # --- Follow mapper ---
     # Axis signs: +1 = same direction, -1 = invert
@@ -25,6 +26,14 @@ runtime_node:
     follow.axis_sign_y: 1
     follow.axis_sign_z: 1
     follow.position_scale: 1.0
+    # vision/camera_pose convention: camera_in_tag or tag_in_camera
+    follow.camera_pose_convention: "camera_in_tag"
+    # Row-major rotation matrix mapping tag-frame vectors into base-frame vectors.
+    follow.tag_to_base_rotation: [1.0, 0.0, 0.0,
+                                  0.0, 1.0, 0.0,
+                                  0.0, 0.0, 1.0]
+    follow.yaw_sign: 1
+    follow.yaw_scale: 1.0
 
     # --- Target projector: step size clipping ---
     projector.max_position_step_m: 0.05
@@ -33,6 +42,7 @@ runtime_node:
     # --- ROS 2 topics ---
     topics.camera_pose: "vision/camera_pose"
     topics.joint_state: "kinematics/joint_state"
+    topics.end_effector_pose: "kinematics/end_effector_pose"
     topics.link_state: "communication/link_state"
     topics.kinematics_target: "kinematics/target"
     topics.ctrl_mode: "communication/ctrl_mode"

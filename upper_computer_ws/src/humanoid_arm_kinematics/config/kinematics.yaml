@@ -25,6 +25,13 @@ dh_params:
 # rotation about the base-frame Z axis (yaw), extracted from the FK rotation matrix.
 controllable_axis: "base_z"
 
+topics:
+  target: "kinematics/target"
+  joint_command: "kinematics/joint_command"
+  joint_state: "kinematics/joint_state"
+  end_effector_pose: "kinematics/end_effector_pose"
+  diagnostics: "kinematics/diagnostics"
+
 # Tool (end-effector) offset from the last joint frame.
 # Translation [x, y, z] in meters, rotation [roll, pitch, yaw] in degrees
 # about the last link frame axes.

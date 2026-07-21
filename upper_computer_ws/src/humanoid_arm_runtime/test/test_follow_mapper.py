@@ -65,3 +65,32 @@ def test_position_scale():
 
     delta, _ = mapper.map(pos0, quat, pos1, quat)
     assert abs(delta[0] - 0.2) < 0.01
+
+
+def test_tag_to_base_rotation_maps_translation_and_yaw():
+    """A calibrated 90-degree frame rotation is applied to the full delta."""
+    rotation = np.array([
+        [0.0, -1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ])
+    mapper = FollowMapper(tag_to_base=rotation)
+    identity = np.array([0.0, 0.0, 0.0, 1.0])
+    q90 = np.array([0.0, 0.0, np.sqrt(0.5), np.sqrt(0.5)])
+
+    delta, yaw = mapper.map(np.zeros(3), identity, np.array([1.0, 0.0, 0.0]), q90)
+
+    assert np.allclose(delta, [0.0, 1.0, 0.0])
+    assert abs(yaw - np.pi / 2) < 1e-6
+
+
+def test_tag_in_camera_convention_is_inverted_before_differencing():
+    mapper = FollowMapper(camera_pose_convention="tag_in_camera")
+    identity = np.array([0.0, 0.0, 0.0, 1.0])
+
+    delta, _ = mapper.map(
+        np.zeros(3), identity, np.array([0.1, 0.0, 0.0]), identity
+    )
+
+    assert np.allclose(delta, [-0.1, 0.0, 0.0])

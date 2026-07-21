@@ -32,9 +32,19 @@ class FollowMapper:
         axis_signs: Tuple[int, int, int] = (1, 1, 1),
         position_scale: float = 1.0,
         tag_to_base: NDArray[np.float64] | None = None,
+        camera_pose_convention: str = "camera_in_tag",
+        yaw_sign: int = 1,
+        yaw_scale: float = 1.0,
     ) -> None:
         self.axis_signs = np.array(axis_signs, dtype=np.float64)
         self.position_scale = position_scale
+        if camera_pose_convention not in ("camera_in_tag", "tag_in_camera"):
+            raise ValueError(
+                "camera_pose_convention must be 'camera_in_tag' or 'tag_in_camera'"
+            )
+        self.camera_pose_convention = camera_pose_convention
+        self.yaw_sign = float(yaw_sign)
+        self.yaw_scale = float(yaw_scale)
         # T_tag→base: the fixed transform from tag CS to robot base CS.
         # If None, identity is assumed (tag is aligned with base).
         self._tag_to_base = (
@@ -64,49 +74,32 @@ class FollowMapper:
         """
         # Build transforms
         T_tag_cam0 = self._build_transform(baseline_position_cam, baseline_quat_xyzw)
-        T_tag_cam  = self._build_transform(current_position_cam, current_quat_xyzw)
+        T_tag_cam = self._build_transform(current_position_cam, current_quat_xyzw)
+        if self.camera_pose_convention == "tag_in_camera":
+            T_tag_cam0 = np.linalg.inv(T_tag_cam0)
+            T_tag_cam = np.linalg.inv(T_tag_cam)
 
-        # Camera displacement: Δ = T_tag_cam0⁻¹ · T_tag_cam
-        # Moves from baseline camera frame to current camera frame.
-        T_cam0_cam = np.linalg.inv(T_tag_cam0) @ T_tag_cam
-        delta_pos_cam = T_cam0_cam[:3, 3]
-        delta_rot_cam = T_cam0_cam[:3, :3]
-
-        # Convert to base frame
-        # T_cam→base = T_tag→base · T_cam→tag = T_tag→base · (T_tag→cam)⁻¹
-        # For delta: Δ_base = R_tag→base · Δ_tag, or simply:
-        # Since T_tag_cam0 and T_tag_cam are both in tag frame, their delta is in
-        # camera frame. We transform delta from camera to base via:
-        #   Δ_base_pos = R_base·R_tag→cam · Δ_cam_pos
-        # For simplicity we assume the camera frame axes roughly align with tag
-        # frame axes, and the major transform is the tag→base offset+rotation.
-
-        # Get the camera-to-tag rotation at the current pose
-        R_tag_cam = T_tag_cam[:3, :3]
-        R_tag_base = self._tag_to_base[:3, :3].T  # base→tag → tag→base? No.
-
-        # The tag→base transform gives us the ability to express camera delta in
-        # base frame.  delta in base ≈ R_tag→base · (R_tag→cam · delta_cam)
-        # But delta_cam is already in camera CS, and we want delta in tag:
-        delta_pos_tag = R_tag_cam @ delta_pos_cam
-
-        # Now express in base frame
-        delta_pos_base = self._tag_to_base[:3, :3] @ delta_pos_tag
+        # Translation is differenced in the common tag frame, then expressed in
+        # base coordinates by the calibrated tag-to-base rotation.
+        rotation_tag_to_base = self._tag_to_base[:3, :3]
+        delta_pos_tag = T_tag_cam[:3, 3] - T_tag_cam0[:3, 3]
+        delta_pos_base = rotation_tag_to_base @ delta_pos_tag
 
         # Apply scaling and axis signs
         delta_pos_base = delta_pos_base * self.axis_signs * self.position_scale
 
         # Yaw extraction: decompose delta rotation about tag Z → base Z
-        delta_yaw_cam = self._extract_yaw_about_z(delta_rot_cam)
-
-        # Rotation delta about camera Z → about tag Z → about base Z
-        # For simplicity: yaw is the Z-rotation of the camera frame delta
-        # (This is a simplification; a full quaternion delta → yaw projection
-        #  would be more rigorous but adds complexity.)
-        delta_yaw_tag = delta_yaw_cam  # same if frame axes are roughly aligned
-        delta_yaw_base = delta_yaw_tag * self.axis_signs[2]
-        # But yaw is about Z, which is scalar. The signs affect position,
-        # the yaw sign is controlled by axis_signs[2].
+        delta_rotation_tag = T_tag_cam[:3, :3] @ T_tag_cam0[:3, :3].T
+        delta_rotation_base = (
+            rotation_tag_to_base
+            @ delta_rotation_tag
+            @ rotation_tag_to_base.T
+        )
+        delta_yaw_base = (
+            self._extract_yaw_about_z(delta_rotation_base)
+            * self.yaw_sign
+            * self.yaw_scale
+        )
 
         return delta_pos_base, delta_yaw_base
 
