@@ -1,4 +1,8 @@
-"""Backward-compatible entry point for the Gazebo camera-follow simulation."""
+"""Entry point for the RViz camera-follow simulation (no hardware I/O).
+
+Launches vision → kinematics → runtime with simulated joint feedback,
+displayed in RViz.  No Gazebo or lower-computer is required.
+"""
 
 from pathlib import Path
 
@@ -9,8 +13,12 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 
 def generate_launch_description():
-    description_share = get_package_share_directory("humanoid_arm_description")
-    launch_file = Path(description_share) / "launch" / "gazebo_camera_follow.launch.py"
+    runtime_share = get_package_share_directory("humanoid_arm_runtime")
+    launch_file = (
+        Path(runtime_share) / "launch" / "rviz_vision_kinematics.launch.py"
+    )
     return LaunchDescription([
-        IncludeLaunchDescription(PythonLaunchDescriptionSource(str(launch_file)))
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(str(launch_file))
+        )
     ])
