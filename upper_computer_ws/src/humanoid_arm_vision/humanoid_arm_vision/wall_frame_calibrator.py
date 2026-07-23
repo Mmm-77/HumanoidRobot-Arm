@@ -19,8 +19,8 @@ from .transform_utils import (
 WALL_FROM_TAG_ROTATION = np.array(
     [
         [0.0, 0.0, 1.0],
-        [1.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0],
     ],
     dtype=np.float64,
 )

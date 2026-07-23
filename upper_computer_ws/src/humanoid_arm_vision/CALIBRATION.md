@@ -5,8 +5,8 @@ The published tracking frame uses this right-handed convention when looking
 toward the tag:
 
 - `+X`: camera moves away from the wall and AprilTag;
-- `+Y`: camera moves to the viewer's right;
-- `+Z`: camera moves upward.
+- `+Y`: camera moves to the viewer's left;
+- `+Z`: camera moves downward.
 
 The AprilTag solver's raw axes are `[right, up, out of wall]`. Therefore the
 calibrated position is:
