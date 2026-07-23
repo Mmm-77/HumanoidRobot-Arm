@@ -2,7 +2,7 @@ runtime_node:
   ros__parameters:
     # Processing rate
     processing_rate_hz: 60.0
-    frame_id: "base"
+    frame_id: "base_link"
 
     # --- Watchdog: data freshness thresholds ---
     watchdog.vision_fresh_s: 0.2
@@ -26,6 +26,8 @@ runtime_node:
     follow.axis_sign_y: 1
     follow.axis_sign_z: 1
     follow.position_scale: 1.0
+    # The RViz-only integration launch overrides this after fresh inputs arrive.
+    follow.auto_start: false
     # vision/camera_pose convention: camera_in_tag or tag_in_camera
     follow.camera_pose_convention: "camera_in_tag"
     # Row-major rotation matrix mapping tag-frame vectors into base-frame vectors.

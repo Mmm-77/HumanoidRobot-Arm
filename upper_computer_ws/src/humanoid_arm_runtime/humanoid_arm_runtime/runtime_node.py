@@ -185,6 +185,7 @@ class RuntimeNode(Node):
 
         # --- Internal state ---
         self._frame_id = str(self._p("frame_id"))
+        self._auto_start = bool(self._p("follow.auto_start"))
         self._clock = time.monotonic
         self.get_logger().info(f"Runtime node started at {rate_hz} Hz")
 
@@ -195,7 +196,7 @@ class RuntimeNode(Node):
     def _declare_params(self) -> None:
         defaults: dict[str, object] = {
             "processing_rate_hz": 60.0,
-            "frame_id": "base",
+            "frame_id": "base_link",
 
             # Watchdog
             "watchdog.vision_fresh_s": 0.2,
@@ -218,6 +219,7 @@ class RuntimeNode(Node):
             "follow.axis_sign_y": 1,
             "follow.axis_sign_z": 1,
             "follow.position_scale": 1.0,
+            "follow.auto_start": False,
             "follow.camera_pose_convention": "camera_in_tag",
             "follow.tag_to_base_rotation": [1.0, 0.0, 0.0,
                                              0.0, 1.0, 0.0,
@@ -398,6 +400,16 @@ class RuntimeNode(Node):
                     self.get_logger().info("All systems ready → READY")
                 except Exception:
                     pass
+
+        # The RViz-only launch retries until all baseline inputs are fresh.
+        # Hardware/system launches retain the explicit start service.
+        if (
+            self._auto_start
+            and self._fsm.state == SystemState.READY
+            and self._capture_baseline()
+        ):
+            self._fsm.transition(Transition.START, now)
+            self.get_logger().info("RViz integration auto-started FOLLOW")
 
         # Safety evaluation
         result = self._safety.evaluate()

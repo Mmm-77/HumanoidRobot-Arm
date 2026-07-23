@@ -1,0 +1,142 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /RobotModel1
+        - /Vision Camera Pose1
+        - /IK Target1
+        - /FK End Effector1
+      Splitter Ratio: 0.55
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.5
+      Cell Size: 0.05
+      Class: rviz_default_plugins/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Name: Grid
+      Plane: XY
+      Plane Cell Count: 20
+      Reference Frame: <Fixed Frame>
+    - Alpha: 1
+      Class: rviz_default_plugins/RobotModel
+      Collision Enabled: false
+      Description Source: Topic
+      Description Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot_description
+      Enabled: true
+      Name: RobotModel
+      Update Interval: 0
+      Visual Enabled: true
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Frame Timeout: 15
+      Marker Scale: 0.03
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: true
+    - Alpha: 1
+      Axes Length: 0.06
+      Axes Radius: 0.006
+      Class: rviz_default_plugins/Pose
+      Color: 80; 160; 255
+      Enabled: true
+      Name: Vision Camera Pose
+      Shape: Axes
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /vision/camera_pose
+    - Alpha: 1
+      Class: rviz_default_plugins/Pose
+      Color: 255; 70; 30
+      Enabled: true
+      Head Length: 0.025
+      Head Radius: 0.012
+      Name: IK Target
+      Shaft Length: 0.07
+      Shaft Radius: 0.006
+      Shape: Arrow
+      Topic:
+        Depth: 10
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /kinematics/target
+    - Alpha: 1
+      Class: rviz_default_plugins/Pose
+      Color: 30; 255; 80
+      Enabled: true
+      Head Length: 0.025
+      Head Radius: 0.012
+      Name: FK End Effector
+      Shaft Length: 0.07
+      Shaft Radius: 0.006
+      Shape: Arrow
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /kinematics/end_effector_pose
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Marker Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /kinematics/visualization
+      Name: IK Target and Error
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Vision Debug Image
+      Normalize Range: true
+      Queue Size: 2
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /vision/debug_image
+  Enabled: true
+  Global Options:
+    Background Color: 30; 30; 34
+    Fixed Frame: world
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 0.7
+      Focal Point:
+        X: 0.0
+        Y: -0.05
+        Z: -0.12
+      Name: Current View
+      Pitch: 0.45
+      Target Frame: base_link
+      Yaw: 0.75
+Window Geometry:
+  Height: 900
+  Width: 1400

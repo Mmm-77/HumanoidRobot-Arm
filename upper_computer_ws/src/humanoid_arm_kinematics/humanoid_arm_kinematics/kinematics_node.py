@@ -211,6 +211,10 @@ class KinematicsNode(Node):
     def _process_target(self) -> None:
         if self._simulation_pub is not None and self._last_joint_angles is not None:
             self._publish_simulated_joint_state(self._last_joint_angles)
+            # Keep FK feedback alive for late subscribers such as the runtime
+            # integration node. The initial publication can otherwise be
+            # missed during a multi-node launch because the topic is volatile.
+            self._publish_end_effector_pose(self._last_joint_angles)
         if self._latest_target is None:
             return
         raw = np.array(
