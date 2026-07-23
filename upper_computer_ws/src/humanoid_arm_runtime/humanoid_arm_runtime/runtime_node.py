@@ -157,6 +157,11 @@ class RuntimeNode(Node):
             str(self._p("topics.kinematics_target")),
             state_qos,
         )
+        self._baseline_pub = self.create_publisher(
+            PoseStamped,
+            str(self._p("topics.baseline_end_effector")),
+            state_qos,
+        )
         self._ctrl_mode_pub = self.create_publisher(
             UInt8,
             str(self._p("topics.ctrl_mode")),
@@ -237,6 +242,7 @@ class RuntimeNode(Node):
             "topics.end_effector_pose": "kinematics/end_effector_pose",
             "topics.link_state": "communication/link_state",
             "topics.kinematics_target": "kinematics/target",
+            "topics.baseline_end_effector": "runtime/baseline_end_effector",
             "topics.ctrl_mode": "communication/ctrl_mode",
             "topics.state": "runtime/state",
             "topics.diagnostics": "runtime/diagnostics",
@@ -469,13 +475,14 @@ class RuntimeNode(Node):
             pose.quaternion_xyzw,
         )
 
-        # Project (clip)
-        clipped_pos, clipped_yaw = self._projector.project(
+        # Rate-limit changes, while preserving the eventual camera offset.
+        projected_pos, projected_yaw = self._projector.project(
             delta_pos_base, delta_yaw_base,
         )
-        final_pos = baseline_ee_pos + clipped_pos
-        final_yaw = baseline_ee_yaw + clipped_yaw
+        final_pos = baseline_ee_pos + projected_pos
+        final_yaw = baseline_ee_yaw + projected_yaw
 
+        self._publish_baseline_pose(baseline_ee_pos, baseline_ee_yaw)
         self._publish_pose_target(now, final_pos, final_yaw)
 
     def _publish_safe_target(self, now: float) -> None:
@@ -513,6 +520,22 @@ class RuntimeNode(Node):
 
         self._target_pub.publish(msg)
 
+    def _publish_baseline_pose(
+        self,
+        position_m: np.ndarray,
+        yaw_rad: float,
+    ) -> None:
+        """Publish the fixed tip pose used as the camera-delta origin."""
+        message = PoseStamped()
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.header.frame_id = self._frame_id
+        message.pose.position.x = float(position_m[0])
+        message.pose.position.y = float(position_m[1])
+        message.pose.position.z = float(position_m[2])
+        message.pose.orientation.z = float(math.sin(yaw_rad / 2.0))
+        message.pose.orientation.w = float(math.cos(yaw_rad / 2.0))
+        self._baseline_pub.publish(message)
+
     def _capture_baseline(self) -> bool:
         """Attempt to capture the FOLLOW baseline from current FK result."""
         end_effector = self._context.get_end_effector_pose()
@@ -527,7 +550,10 @@ class RuntimeNode(Node):
             2.0 * (w * z + x * y),
             1.0 - 2.0 * (y * y + z * z),
         )
-        return self._baseline.capture(end_effector.position, ee_yaw)
+        captured = self._baseline.capture(end_effector.position, ee_yaw)
+        if captured:
+            self._projector.reset()
+        return captured
 
     # ------------------------------------------------------------------
     # Publishers

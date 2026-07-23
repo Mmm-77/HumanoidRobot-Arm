@@ -25,6 +25,7 @@ from .forward_solver import ForwardSolver
 from .inverse_solver import IKConfig, InverseSolver
 from .jacobian import JacobianSolver
 from .robot_model import ModelError, RobotModel
+from .solution_policy import is_solution_acceptable
 from .target_shaper import ShaperConfig, TargetShaper
 
 
@@ -234,7 +235,14 @@ class KinematicsNode(Node):
             self._shaper.shape(self._fk.solve(self._last_joint_angles).position)
         target = self._shaper.shape(raw)
         result = self._ik.solve(target, self._last_joint_angles)
-        if not result.success:
+        validation_limit = float(
+            self._value("validation.max_position_error_m")
+        )
+        if not is_solution_acceptable(
+            result.success,
+            result.position_error_m,
+            validation_limit,
+        ):
             actual = self._fk.solve(self._last_joint_angles).position
             self._publish_visualization(target, actual)
             self._publish_diagnostics(
@@ -246,7 +254,7 @@ class KinematicsNode(Node):
         validation_error = float(
             np.linalg.norm(self._fk.solve(result.joint_angles_rad).position - target)
         )
-        if validation_error > float(self._value("validation.max_position_error_m")):
+        if validation_error > validation_limit:
             self._publish_diagnostics(
                 "validation_failed",
                 DiagnosticStatus.WARN,
@@ -267,9 +275,11 @@ class KinematicsNode(Node):
         self._publish_end_effector_pose(self._last_joint_angles)
         actual = self._fk.solve(self._last_joint_angles).position
         self._publish_visualization(target, actual)
+        reason = "valid" if result.success else "valid_within_validation"
+        level = DiagnosticStatus.OK if result.success else DiagnosticStatus.WARN
         self._publish_diagnostics(
-            "valid",
-            DiagnosticStatus.OK,
+            reason,
+            level,
             {
                 "position_error_m": f"{validation_error:.6f}",
                 "iterations": str(result.iterations),
