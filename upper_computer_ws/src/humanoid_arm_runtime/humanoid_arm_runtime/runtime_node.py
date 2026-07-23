@@ -74,10 +74,10 @@ class RuntimeNode(Node):
         self._declare_params()
 
         # --- Core components ---
-        self._context = SystemContext()
+        self._sys_context = SystemContext()
         self._fsm = StateMachine(SystemState.INIT)
         self._watchdog = Watchdog(
-            self._context,
+            self._sys_context,
             WatchdogConfig(
                 vision_fresh_s=float(self._p("watchdog.vision_fresh_s")),
                 vision_stale_s=float(self._p("watchdog.vision_stale_s")),
@@ -94,7 +94,7 @@ class RuntimeNode(Node):
             max_ik_failures=int(self._p("safety.max_ik_failures")),
         )
         self._baseline = BaselineManager(
-            self._context,
+            self._sys_context,
             max_pose_age_s=float(self._p("baseline.max_pose_age_s")),
             max_joint_age_s=float(self._p("baseline.max_joint_age_s")),
             monotonic_clock=time.monotonic,
@@ -191,7 +191,7 @@ class RuntimeNode(Node):
         # --- Internal state ---
         self._frame_id = str(self._p("frame_id"))
         self._auto_start = bool(self._p("follow.auto_start"))
-        self._clock = time.monotonic
+        self._wall_clock = time.monotonic
         self.get_logger().info(f"Runtime node started at {rate_hz} Hz")
 
     # ------------------------------------------------------------------
@@ -272,7 +272,7 @@ class RuntimeNode(Node):
 
     def _pose_callback(self, msg: PoseStamped) -> None:
         """Cache the latest camera pose (with quality gate checked upstream)."""
-        now = self._clock()
+        now = self._wall_clock()
         pose = PoseSnapshot(
             timestamp_s=now,
             position=np.array([
@@ -285,11 +285,11 @@ class RuntimeNode(Node):
             ),
             valid=True,
         )
-        self._context.set_pose(pose)
+        self._sys_context.set_pose(pose)
 
     def _joint_callback(self, msg: JointState) -> None:
         """Cache the latest joint state from communication."""
-        now = self._clock()
+        now = self._wall_clock()
         positions = np.array(msg.position[:4], dtype=np.float64)
         velocities = np.array(msg.velocity[:4], dtype=np.float64)
 
@@ -305,7 +305,7 @@ class RuntimeNode(Node):
             velocities_rad_per_s=velocities,
             any_error=False,
         )
-        self._context.set_joints(joints)
+        self._sys_context.set_joints(joints)
 
     def _end_effector_callback(self, msg: PoseStamped) -> None:
         """Cache the latest measured FK end-effector pose in the base frame."""
@@ -322,15 +322,15 @@ class RuntimeNode(Node):
         if norm < 1e-12:
             self.get_logger().warning("Ignoring end-effector pose with zero quaternion")
             return
-        self._context.set_end_effector_pose(PoseSnapshot(
-            timestamp_s=self._clock(),
+        self._sys_context.set_end_effector_pose(PoseSnapshot(
+            timestamp_s=self._wall_clock(),
             position=values[:3],
             quaternion_xyzw=quaternion / norm,
             valid=True,
         ))
 
     def _link_callback(self, msg: Bool) -> None:
-        self._context.link_ok = msg.data
+        self._sys_context.link_ok = msg.data
 
     # ------------------------------------------------------------------
     # Service callbacks
@@ -342,7 +342,7 @@ class RuntimeNode(Node):
                 response.success = False
                 response.message = "Cannot start FOLLOW: camera or FK baseline is not fresh"
                 return response
-            change = self._fsm.transition(Transition.START, self._clock())
+            change = self._fsm.transition(Transition.START, self._wall_clock())
             self.get_logger().info(f"State: {change.previous.value} → {change.current.value}")
             response.success = True
             response.message = "FOLLOW started"
@@ -353,7 +353,7 @@ class RuntimeNode(Node):
 
     def _hold_cb(self, request, response):
         try:
-            change = self._fsm.transition(Transition.HOLD, self._clock())
+            change = self._fsm.transition(Transition.HOLD, self._wall_clock())
             response.success = True
             response.message = f"HOLD → {change.current.value}"
         except Exception as exc:
@@ -367,7 +367,7 @@ class RuntimeNode(Node):
                 response.success = False
                 response.message = "Cannot resume FOLLOW: camera or FK baseline is not fresh"
                 return response
-            change = self._fsm.transition(Transition.UNHOLD, self._clock())
+            change = self._fsm.transition(Transition.UNHOLD, self._wall_clock())
             response.success = True
             response.message = f"UNHOLD → {change.current.value}"
         except Exception as exc:
@@ -377,8 +377,8 @@ class RuntimeNode(Node):
 
     def _reset_cb(self, request, response):
         try:
-            change = self._fsm.transition(Transition.RESET, self._clock())
-            self._context.clear_baseline()
+            change = self._fsm.transition(Transition.RESET, self._wall_clock())
+            self._sys_context.clear_baseline()
             self._watchdog.reset()
             response.success = True
             response.message = f"RESET → {change.current.value}"
@@ -392,20 +392,20 @@ class RuntimeNode(Node):
     # ------------------------------------------------------------------
 
     def _tick(self) -> None:
-        now = self._clock()
+        now = self._wall_clock()
 
         # If all subsystems are online → READY
         if self._fsm.state == SystemState.INIT:
             if (
-                self._context.latest_pose is not None
-                and self._context.latest_joints is not None
-                and self._context.latest_end_effector_pose is not None
+                self._sys_context.latest_pose is not None
+                and self._sys_context.latest_joints is not None
+                and self._sys_context.latest_end_effector_pose is not None
             ):
                 try:
                     self._fsm.transition(Transition.SYSTEMS_READY, now)
                     self.get_logger().info("All systems ready → READY")
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.get_logger().error(f"SYSTEMS_READY transition failed: {e}")
 
         # The RViz-only launch retries until all baseline inputs are fresh.
         # Hardware/system launches retain the explicit start service.
@@ -449,7 +449,7 @@ class RuntimeNode(Node):
 
     def _publish_follow_target(self, now: float) -> None:
         """Compute and publish a 4-DOF follow target from camera delta."""
-        pose = self._context.get_pose()
+        pose = self._sys_context.get_pose()
         if pose is None or not pose.valid:
             self._watchdog.on_vision_lost()
             return
@@ -457,13 +457,13 @@ class RuntimeNode(Node):
         self._watchdog.on_vision_ok()
 
         # Ensure baseline exists
-        if not self._context.has_baseline():
+        if not self._sys_context.has_baseline():
             self._capture_baseline()
 
         # Map camera delta → base-frame 4-DOF target
-        baseline_pose = self._context.baseline_pose
-        baseline_ee_pos = self._context.baseline_ee_position_m
-        baseline_ee_yaw = self._context.baseline_ee_yaw_rad
+        baseline_pose = self._sys_context.baseline_pose
+        baseline_ee_pos = self._sys_context.baseline_ee_position_m
+        baseline_ee_yaw = self._sys_context.baseline_ee_yaw_rad
 
         if baseline_pose is None or baseline_ee_pos is None or baseline_ee_yaw is None:
             return
@@ -487,7 +487,7 @@ class RuntimeNode(Node):
 
     def _publish_safe_target(self, now: float) -> None:
         """Hold the latest FK pose instead of mapping a camera pose into base."""
-        end_effector = self._context.get_end_effector_pose()
+        end_effector = self._sys_context.get_end_effector_pose()
         if end_effector is None:
             return
         x, y, z, w = end_effector.quaternion_xyzw
@@ -538,10 +538,10 @@ class RuntimeNode(Node):
 
     def _capture_baseline(self) -> bool:
         """Attempt to capture the FOLLOW baseline from current FK result."""
-        end_effector = self._context.get_end_effector_pose()
+        end_effector = self._sys_context.get_end_effector_pose()
         if end_effector is None:
             return False
-        if (self._clock() - end_effector.timestamp_s) > float(
+        if (self._wall_clock() - end_effector.timestamp_s) > float(
             self._p("baseline.max_end_effector_age_s")
         ):
             return False

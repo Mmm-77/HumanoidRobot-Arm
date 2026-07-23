@@ -27,7 +27,7 @@ runtime_node:
     follow.axis_sign_z: 1
     follow.position_scale: 1.0
     # The RViz-only integration launch overrides this after fresh inputs arrive.
-    follow.auto_start: false
+    follow.auto_start: true
     # vision/camera_pose is camera-in-camera_tracking after wall calibration.
     follow.camera_pose_convention: "camera_in_tag"
     # Row-major rotation mapping camera_tracking vectors into base_link.
@@ -43,7 +43,7 @@ runtime_node:
 
     # --- ROS 2 topics ---
     topics.camera_pose: "vision/camera_pose"
-    topics.joint_state: "kinematics/joint_state"
+    topics.joint_state: "joint_states"
     topics.end_effector_pose: "kinematics/end_effector_pose"
     topics.link_state: "communication/link_state"
     topics.kinematics_target: "kinematics/target"

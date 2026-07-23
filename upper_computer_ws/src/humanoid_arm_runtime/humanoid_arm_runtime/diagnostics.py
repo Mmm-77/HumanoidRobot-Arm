@@ -112,10 +112,10 @@ class DiagnosticsAggregator:
     @staticmethod
     def _level(status: WatchdogStatus) -> int:
         if status == WatchdogStatus.OK:
-            return int(DiagnosticStatus.OK)
+            return DiagnosticStatus.OK
         if status == WatchdogStatus.STALE:
-            return int(DiagnosticStatus.WARN)
-        return int(DiagnosticStatus.ERROR)
+            return DiagnosticStatus.WARN
+        return DiagnosticStatus.ERROR
 
     @staticmethod
     def _kv(key: str, value: str) -> KeyValue:
