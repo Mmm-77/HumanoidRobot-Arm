@@ -24,12 +24,13 @@ from typing import Callable, Optional, Tuple
 import numpy as np
 import rclpy
 from diagnostic_msgs.msg import DiagnosticArray
-from geometry_msgs.msg import PoseStamped, Quaternion
+from geometry_msgs.msg import PoseStamped, Quaternion, TransformStamped
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, String, UInt8
 from std_srvs.srv import Trigger
+import tf2_ros
 
 from .baseline_manager import BaselineManager
 from .diagnostics import DiagnosticsAggregator
@@ -50,7 +51,7 @@ from .system_context import (
     SystemContext,
 )
 from .task_projector import TaskProjector
-from .watchdog import Watchdog, WatchdogConfig
+from .watchdog import Watchdog, WatchdogConfig, WatchdogStatus
 
 
 def _quat_from_msg(msg: Quaternion) -> Tuple[float, float, float, float]:
@@ -150,6 +151,12 @@ class RuntimeNode(Node):
             self._link_callback,
             sensor_qos,
         )
+        self._ik_diag_sub = self.create_subscription(
+            DiagnosticArray,
+            str(self._p("topics.kinematics_diagnostics")),
+            self._ik_diag_callback,
+            10,
+        )
 
         # Publications
         self._target_pub = self.create_publisher(
@@ -177,6 +184,9 @@ class RuntimeNode(Node):
             str(self._p("topics.diagnostics")),
             state_qos,
         )
+
+        # TF broadcaster for the baseline (fixed arm-zero reference)
+        self._tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
         # Services
         self._srv_start = self.create_service(Trigger, "~/start", self._start_cb)
@@ -242,6 +252,7 @@ class RuntimeNode(Node):
             "topics.end_effector_pose": "kinematics/end_effector_pose",
             "topics.link_state": "communication/link_state",
             "topics.kinematics_target": "kinematics/target",
+            "topics.kinematics_diagnostics": "kinematics/diagnostics",
             "topics.baseline_end_effector": "runtime/baseline_end_effector",
             "topics.ctrl_mode": "communication/ctrl_mode",
             "topics.state": "runtime/state",
@@ -332,6 +343,17 @@ class RuntimeNode(Node):
     def _link_callback(self, msg: Bool) -> None:
         self._sys_context.link_ok = msg.data
 
+    def _ik_diag_callback(self, msg: DiagnosticArray) -> None:
+        """Track IK success/failure from kinematics_node diagnostics."""
+        for status in msg.status:
+            reason = status.message
+            if reason in ("ik_failed", "validation_failed", "internal_error"):
+                self._watchdog.on_ik_failure()
+                return
+            if reason in ("valid", "valid_within_validation", "ik_clamped"):
+                self._watchdog.on_ik_ok()
+                return
+
     # ------------------------------------------------------------------
     # Service callbacks
     # ------------------------------------------------------------------
@@ -416,6 +438,22 @@ class RuntimeNode(Node):
         ):
             self._fsm.transition(Transition.START, now)
             self.get_logger().info("RViz integration auto-started FOLLOW")
+
+        # Automatic SAFE → READY recovery when vision/IK recover.
+        if self._fsm.state == SystemState.SAFE:
+            vision_ok = self._watchdog.vision_status() == WatchdogStatus.OK
+            comm_ok = self._watchdog.communication_status() != WatchdogStatus.LOST
+            ik_ok = self._watchdog.consecutive_ik_failures <= int(
+                self._p("safety.max_ik_failures")
+            )
+            if vision_ok and comm_ok and ik_ok:
+                try:
+                    self._fsm.transition(Transition.VISION_RECOVERED, now)
+                    self.get_logger().info(
+                        "Vision/IK recovered, SAFE → READY"
+                    )
+                except Exception as e:
+                    self.get_logger().error(f"VISION_RECOVERED transition failed: {e}")
 
         # Safety evaluation
         result = self._safety.evaluate()
@@ -526,8 +564,9 @@ class RuntimeNode(Node):
         yaw_rad: float,
     ) -> None:
         """Publish the fixed tip pose used as the camera-delta origin."""
+        now = self.get_clock().now().to_msg()
         message = PoseStamped()
-        message.header.stamp = self.get_clock().now().to_msg()
+        message.header.stamp = now
         message.header.frame_id = self._frame_id
         message.pose.position.x = float(position_m[0])
         message.pose.position.y = float(position_m[1])
@@ -535,6 +574,18 @@ class RuntimeNode(Node):
         message.pose.orientation.z = float(math.sin(yaw_rad / 2.0))
         message.pose.orientation.w = float(math.cos(yaw_rad / 2.0))
         self._baseline_pub.publish(message)
+
+        # Also publish as a TF frame (fixed reference at arm-zero / initial pose)
+        t = TransformStamped()
+        t.header.stamp = now
+        t.header.frame_id = self._frame_id
+        t.child_frame_id = "baseline"
+        t.transform.translation.x = float(position_m[0])
+        t.transform.translation.y = float(position_m[1])
+        t.transform.translation.z = float(position_m[2])
+        t.transform.rotation.z = float(math.sin(yaw_rad / 2.0))
+        t.transform.rotation.w = float(math.cos(yaw_rad / 2.0))
+        self._tf_broadcaster.sendTransform(t)
 
     def _capture_baseline(self) -> bool:
         """Attempt to capture the FOLLOW baseline from current FK result."""

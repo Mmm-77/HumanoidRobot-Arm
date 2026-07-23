@@ -40,6 +40,8 @@ class KinematicsNode(Node):
         self._build_pipeline()
         self._last_joint_angles: Optional[np.ndarray] = None
         self._latest_target: Optional[PoseStamped] = None
+        self._consecutive_ik_failures = 0
+        self._max_consecutive_failures = 10
         self._setup_ros()
 
     def _declare_parameters(self) -> None:
@@ -210,11 +212,20 @@ class KinematicsNode(Node):
         self._publish_end_effector_pose(angles, message.header.stamp)
 
     def _process_target(self) -> None:
+        try:
+            self._process_target_impl()
+        except Exception:
+            self.get_logger().exception(
+                "Unhandled exception in kinematics tick; skipping this cycle"
+            )
+            self._publish_diagnostics(
+                "internal_error", DiagnosticStatus.ERROR,
+                {"detail": "unhandled exception, see node log"},
+            )
+
+    def _process_target_impl(self) -> None:
         if self._simulation_pub is not None and self._last_joint_angles is not None:
             self._publish_simulated_joint_state(self._last_joint_angles)
-            # Keep FK feedback alive for late subscribers such as the runtime
-            # integration node. The initial publication can otherwise be
-            # missed during a multi-node launch because the topic is volatile.
             self._publish_end_effector_pose(self._last_joint_angles)
         if self._latest_target is None:
             return
@@ -243,25 +254,10 @@ class KinematicsNode(Node):
             result.position_error_m,
             validation_limit,
         ):
-            actual = self._fk.solve(self._last_joint_angles).position
-            self._publish_visualization(target, actual)
-            self._publish_diagnostics(
-                "ik_failed",
-                DiagnosticStatus.WARN,
-                {"position_error_m": f"{result.position_error_m:.6f}"},
-            )
-            return
-        validation_error = float(
-            np.linalg.norm(self._fk.solve(result.joint_angles_rad).position - target)
-        )
-        if validation_error > validation_limit:
-            self._publish_diagnostics(
-                "validation_failed",
-                DiagnosticStatus.WARN,
-                {"position_error_m": f"{validation_error:.6f}"},
-            )
+            self._on_ik_unreachable(target, result)
             return
 
+        self._consecutive_ik_failures = 0
         previous = self._last_joint_angles.copy()
         self._last_joint_angles = result.joint_angles_rad.copy()
         self._publish_joint_command(
@@ -281,11 +277,71 @@ class KinematicsNode(Node):
             reason,
             level,
             {
-                "position_error_m": f"{validation_error:.6f}",
+                "position_error_m": f"{result.position_error_m:.6f}",
                 "iterations": str(result.iterations),
                 "near_position_singularity": str(result.near_singular),
             },
         )
+
+    def _on_ik_unreachable(
+        self,
+        target: np.ndarray,
+        result: object,
+    ) -> None:
+        """Handle unreachable target by moving to the closest reachable pose.
+
+        The IK solver's Levenberg-Marquardt iteration naturally converges
+        toward the workspace boundary when the target is outside it.  We
+        accept that partial result as a clamped solution, reset the
+        TargetShaper so it doesn't drift, and continue publishing.
+        """
+        self._consecutive_ik_failures += 1
+        if self._consecutive_ik_failures >= self._max_consecutive_failures:
+            self._shaper.reset()
+            self.get_logger().warn(
+                f"TargetShaper reset after {self._consecutive_ik_failures} "
+                "consecutive IK failures"
+            )
+            self._consecutive_ik_failures = 0
+            return
+
+        # Use the IK solver's partial result as the closest reachable config.
+        if result.forward_result is not None and np.isfinite(result.position_error_m):
+            clamped_angles = result.joint_angles_rad
+            clamped_pos = result.forward_result.position
+
+            # Reset TargetShaper to the clamped boundary position so it
+            # doesn't keep drifting toward the unreachable target.
+            self._shaper.reset()
+            self._shaper.shape(clamped_pos)
+
+            previous = self._last_joint_angles.copy()
+            self._last_joint_angles = clamped_angles.copy()
+            self._publish_joint_command(
+                clamped_angles,
+                (clamped_angles - previous)
+                * float(self._value("processing_rate_hz")),
+                self._latest_target.header.stamp,
+            )
+            if self._simulation_pub is not None:
+                self._publish_simulated_joint_state(clamped_angles)
+            self._publish_end_effector_pose(clamped_angles)
+            self._publish_visualization(target, clamped_pos)
+            self._publish_diagnostics(
+                "ik_clamped",
+                DiagnosticStatus.WARN,
+                {"position_error_m": f"{result.position_error_m:.6f}"},
+            )
+            self._consecutive_ik_failures = 0
+        else:
+            # No usable partial result — truly stuck.
+            actual = self._fk.solve(self._last_joint_angles).position
+            self._publish_visualization(target, actual)
+            self._publish_diagnostics(
+                "ik_failed",
+                DiagnosticStatus.WARN,
+                {"position_error_m": f"{result.position_error_m:.6f}"},
+            )
 
     def _publish_joint_command(
         self, angles: np.ndarray, velocities: np.ndarray, stamp: Any
