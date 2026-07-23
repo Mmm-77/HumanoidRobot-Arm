@@ -32,9 +32,16 @@ vision_node:
     filter.orientation_alpha: 0.30
     filter.reset_gap_s: 0.50
 
+    # Wall tracking frame:
+    # +X away from the wall, +Y right when facing the tag, +Z upward.
+    # At the aligned pose, Y=Z=0 and X=0 at this tag-to-camera distance.
+    calibration.wall_x_origin_m: 0.500
+
     frames.tag: "tag"
     frames.camera: "camera_color_optical_frame"
+    frames.tracking: "camera_tracking"
     topics.pose: "vision/camera_pose"
+    topics.raw_pose: "vision/camera_pose_raw"
     topics.valid: "vision/valid"
     topics.camera_info: "vision/camera_info"
     topics.diagnostics: "vision/diagnostics"

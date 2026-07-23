@@ -28,9 +28,9 @@ runtime_node:
     follow.position_scale: 1.0
     # The RViz-only integration launch overrides this after fresh inputs arrive.
     follow.auto_start: false
-    # vision/camera_pose convention: camera_in_tag or tag_in_camera
+    # vision/camera_pose is camera-in-camera_tracking after wall calibration.
     follow.camera_pose_convention: "camera_in_tag"
-    # Row-major rotation matrix mapping tag-frame vectors into base-frame vectors.
+    # Row-major rotation mapping camera_tracking vectors into base_link.
     follow.tag_to_base_rotation: [1.0, 0.0, 0.0,
                                   0.0, 1.0, 0.0,
                                   0.0, 0.0, 1.0]

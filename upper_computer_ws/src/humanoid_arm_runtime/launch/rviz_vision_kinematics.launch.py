@@ -61,10 +61,10 @@ def generate_launch_description() -> LaunchDescription:
             Node(
                 package="tf2_ros",
                 executable="static_transform_publisher",
-                name="tag_frame_publisher",
+                name="camera_tracking_frame_publisher",
                 output="screen",
-                # Default: tag and base axes are aligned. Change this and the
-                # runtime mapping together after calibrating the real setup.
+                # The integration check maps calibrated camera axes directly
+                # onto the robot base axes. This transform is display-only.
                 arguments=[
                     "0",
                     "0",
@@ -73,7 +73,7 @@ def generate_launch_description() -> LaunchDescription:
                     "0",
                     "0",
                     "base_link",
-                    "tag",
+                    "camera_tracking",
                 ],
             ),
             Node(

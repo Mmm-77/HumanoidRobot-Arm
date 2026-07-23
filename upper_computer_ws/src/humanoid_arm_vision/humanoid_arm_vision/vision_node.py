@@ -39,6 +39,7 @@ from .camera_driver import CameraConfig, CameraError, CameraFrame, RealSenseCame
 from .pose_filter import PoseFilter, PoseFilterConfig
 from .pose_solver import AprilTagPoseSolver, PoseEstimate, PoseSolverError
 from .quality_gate import PoseQualityGate, QualityConfig, QualityDecision, QualityReason
+from .wall_frame_calibrator import WallFrameCalibrator
 
 
 class VisionNode(Node):
@@ -47,8 +48,16 @@ class VisionNode(Node):
         self._declare_parameters()
         self._tag_frame = str(self._value("frames.tag"))
         self._camera_frame = str(self._value("frames.camera"))
-        if not self._tag_frame or not self._camera_frame:
-            raise ValueError("tag and camera frame ids must not be empty")
+        self._tracking_frame = str(self._value("frames.tracking"))
+        if (
+            not self._tag_frame
+            or not self._camera_frame
+            or not self._tracking_frame
+        ):
+            raise ValueError("tag, camera, and tracking frame ids must not be empty")
+        self._wall_calibrator = WallFrameCalibrator(
+            float(self._value("calibration.wall_x_origin_m"))
+        )
 
         camera_config = CameraConfig(
             serial_number=str(self._value("camera.serial_number")).strip(),
@@ -109,6 +118,9 @@ class VisionNode(Node):
         state_qos = QoSProfile(depth=5)
         self._pose_publisher = self.create_publisher(
             PoseStamped, str(self._value("topics.pose")), state_qos
+        )
+        self._raw_pose_publisher = self.create_publisher(
+            PoseStamped, str(self._value("topics.raw_pose")), state_qos
         )
         self._valid_publisher = self.create_publisher(
             Bool, str(self._value("topics.valid")), state_qos
@@ -173,9 +185,12 @@ class VisionNode(Node):
             "filter.position_alpha": 0.35,
             "filter.orientation_alpha": 0.30,
             "filter.reset_gap_s": 0.50,
+            "calibration.wall_x_origin_m": 0.50,
             "frames.tag": "tag",
             "frames.camera": "camera",
+            "frames.tracking": "camera_tracking",
             "topics.pose": "vision/camera_pose",
+            "topics.raw_pose": "vision/camera_pose_raw",
             "topics.valid": "vision/valid",
             "topics.camera_info": "vision/camera_info",
             "topics.diagnostics": "vision/diagnostics",
@@ -257,7 +272,17 @@ class VisionNode(Node):
                     estimate.position, estimate.orientation_xyzw, frame.capture_time_s
                 )
             self._pose_publisher.publish(
-                self._pose_message(filtered.position, filtered.orientation_xyzw, stamp)
+                self._calibrated_pose_message(
+                    filtered.position, filtered.orientation_xyzw, stamp
+                )
+            )
+            self._raw_pose_publisher.publish(
+                self._pose_message(
+                    filtered.position,
+                    filtered.orientation_xyzw,
+                    stamp,
+                    self._tag_frame,
+                )
             )
         self._publish_result(
             decision,
@@ -305,11 +330,15 @@ class VisionNode(Node):
             self._publish_image(self._debug_image_publisher, debug_image, stamp)
 
     def _pose_message(
-        self, position: np.ndarray, orientation: np.ndarray, stamp
+        self,
+        position: np.ndarray,
+        orientation: np.ndarray,
+        stamp,
+        frame_id: str,
     ) -> PoseStamped:
         message = PoseStamped()
         message.header.stamp = stamp
-        message.header.frame_id = self._tag_frame
+        message.header.frame_id = frame_id
         message.pose.position.x = float(position[0])
         message.pose.position.y = float(position[1])
         message.pose.position.z = float(position[2])
@@ -318,6 +347,17 @@ class VisionNode(Node):
         message.pose.orientation.z = float(orientation[2])
         message.pose.orientation.w = float(orientation[3])
         return message
+
+    def _calibrated_pose_message(
+        self, position: np.ndarray, orientation: np.ndarray, stamp
+    ) -> PoseStamped:
+        calibrated = self._wall_calibrator.calibrate(position, orientation)
+        return self._pose_message(
+            calibrated.position,
+            calibrated.orientation_xyzw,
+            stamp,
+            self._tracking_frame,
+        )
 
     def _camera_info(self, calibration: CameraCalibration, stamp) -> CameraInfo:
         message = CameraInfo()

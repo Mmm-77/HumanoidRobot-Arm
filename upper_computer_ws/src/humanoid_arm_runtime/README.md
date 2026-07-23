@@ -21,16 +21,16 @@ displays appear.
 
 RViz shows:
 
-- blue axes: `/vision/camera_pose`, the camera pose in the `tag` frame;
+- blue axes: `/vision/camera_pose`, the wall-calibrated camera pose in
+  `camera_tracking`;
 - red arrow: `/kinematics/target`, the mapped target in `base_link`;
 - green arrow: `/kinematics/end_effector_pose`, the FK result;
 - red/green spheres and the error line: `/kinematics/visualization`;
 - the annotated RealSense image: `/vision/debug_image`.
 
-The default assumes the `tag` and `base_link` axes are aligned. Before judging
-motion direction, calibrate `follow.tag_to_base_rotation` and the axis signs in
-`runtime.yaml`; update the static `base_link -> tag` transform in the launch
-file to match the same physical installation.
+The calibrated camera axes map directly onto `base_link`: away from the wall
+is +X, right while facing the tag is +Y, and up is +Z. Set the neutral
+camera-to-tag distance with `calibration.wall_x_origin_m` in `vision.yaml`.
 
 Expected behavior:
 
